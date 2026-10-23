@@ -51,6 +51,8 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   // 只有撤销（踢掉别的设备）才需要 admin。
   'device.list': P('viewer'),
   'device.revoke': P('admin', 'unlocked'),
+  // 改名不影响连接权限，操作级即可
+  'device.rename': P('operator', 'unlocked'),
   // 配对**不是**豁免方法：锁定时允许配对，等于把门锁上却在锁上装了个新锁孔。
   // 人在电脑前才配对新设备，所以要求 unlocked 不会挡正常流程。
   'pair.start': P('viewer', 'unlocked'),
@@ -89,6 +91,16 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   'session.queue.remove': P('operator', 'unlocked'),
   'session.queue.reorder': P('operator', 'unlocked'),
   'session.queue.clear': P('operator', 'unlocked'),
+
+  // ── 会话管理 ────────────────────────────────────────────────────────
+  // 改名/归档都改动了会话的持久状态，等同写操作 → 需要解锁。
+  // 读模型目录不改状态，与 session.list 同级
+  'session.modelCatalog': P('viewer'),
+  // 选模型会改变后续回合的行为，视为写操作
+  'session.selectModel': P('operator', 'unlocked'),
+  'session.rename': P('operator', 'unlocked'),
+  'session.archive': P('operator', 'unlocked'),
+  'session.unarchive': P('operator', 'unlocked'),
 
   // ── 会话产物 ────────────────────────────────────────────────────────
   'session.changes': P('viewer'),

@@ -80,25 +80,57 @@ test('assistant/message 缺 text 时丢弃（不产出空气泡）', () => {
   assert.equal(toTraceItem({ type: 'assistant/message', seq: 3, data: {} }), undefined)
 })
 
-test('tool/call → tool，input 截断到 200 字符', () => {
-  const long = 'x'.repeat(500)
-  const item = toTraceItem({ type: 'tool/call', seq: 4, data: { toolName: 'Bash', input: long, target: 'ls' } })
+test('tool/call 用真实字段 name/arguments（dsh 的 SessionEventMap）', () => {
+  // 关键：字段名是 name / arguments，不是 toolName / input。
+  // 取错字段会落到兜底 'tool'，界面上就是一串看不懂的 "▸ tool"。
+  const long = JSON.stringify({ command: 'x'.repeat(500) })
+  const item = toTraceItem({ type: 'tool/call', seq: 4, data: { name: 'Bash', arguments: long } })
   assert.equal(item.k, 'tool')
-  assert.equal(item.tool, 'Bash')
-  assert.equal(item.target, 'ls')
-  assert.equal(item.input.length, 200)
+  assert.equal(item.tool, 'Bash', '必须取到真实工具名')
+  assert.equal(item.input.length, 200, 'input 截断到 200')
 })
 
-test('tool/result → tool，output 截断到 400 字符并带 ok/ms', () => {
-  const item = toTraceItem({
-    type: 'tool/result',
-    seq: 5,
-    data: { toolName: 'Bash', output: 'y'.repeat(900), ok: false, ms: 12 },
+test('tool/call 从 arguments 解析出可读目标', () => {
+  const bash = toTraceItem({
+    type: 'tool/call', seq: 5,
+    data: { name: 'Bash', arguments: JSON.stringify({ command: 'npm test' }) },
   })
-  assert.equal(item.k, 'tool')
-  assert.equal(item.output.length, 400)
-  assert.equal(item.ok, false)
-  assert.equal(item.ms, 12)
+  assert.equal(bash.target, 'npm test', '命令取 command 字段')
+
+  const read = toTraceItem({
+    type: 'tool/call', seq: 6,
+    data: { name: 'Read', arguments: JSON.stringify({ file_path: '/a/b.ts' }) },
+  })
+  assert.equal(read.target, '/a/b.ts', '文件取 file_path')
+
+  // 非 JSON 参数：取第一行
+  const raw = toTraceItem({ type: 'tool/call', seq: 7, data: { name: 'Bash', arguments: 'ls -la' } })
+  assert.equal(raw.target, 'ls -la')
+})
+
+test('tool 调用带 callId（用于合并 result）', () => {
+  const item = toTraceItem({
+    type: 'tool/call', seq: 8,
+    data: { name: 'Bash', arguments: '{}', callId: 'call_1' },
+  })
+  assert.equal(item.callId, 'call_1')
+})
+
+test('tool/result 用真实结构 message/error 判断成败', () => {
+  const ok = toTraceItem({
+    type: 'tool/result', seq: 5,
+    data: { callId: 'c1', message: { content: [{ type: 'text', text: 'all good' }] } },
+  })
+  assert.equal(ok.k, 'tool')
+  assert.equal(ok.ok, true, '没有 error 字段 = 成功')
+  assert.equal(ok.output, 'all good')
+  assert.equal(ok.callId, 'c1')
+
+  const bad = toTraceItem({
+    type: 'tool/result', seq: 6,
+    data: { callId: 'c2', message: { content: [] }, error: { name: 'E', code: 'E1', reason: 'boom' } },
+  })
+  assert.equal(bad.ok, false, '有 error 字段 = 失败')
 })
 
 test('approval/asked → approval，带 id 与命令', () => {
@@ -131,14 +163,16 @@ test('未知事件静默丢弃，绝不抛错（dsh 加事件比我们跟得快�
 
 test('redacted 时清空正文，但保留结构（半锁只看"改了什么"）', () => {
   const item = toTraceItem(
-    { type: 'tool/result', seq: 11, data: { toolName: 'Bash', output: '敏感内容', ok: true } },
+    { type: 'tool/result', seq: 11, data: { name: 'Bash', message: { content: [{ type: 'text', text: '敏感内容' }] } } },
     true,
   )
   assert.equal(item.k, 'tool')
   assert.equal(item.redacted, true)
   assert.equal(item.output, undefined)
-  assert.equal(item.tool, 'Bash')
   assert.equal(item.ok, true)
+  // tool/result 本身不带工具名（dsh 的结构里没有 name 字段），
+  // 合并时由上层保留 call 那条的名字，所以这里允许为空
+
 })
 
 // ── TraceItem → StreamItem ────────────────────────────────────────────────
@@ -171,6 +205,20 @@ test('其它 note / think / file 不进聊天流（详情页才看）', () => {
   assert.equal(toStreamItem({ k: 'note', seq: 5, at: 5, text: '会话标题：x' }), undefined)
   assert.equal(toStreamItem({ k: 'think', seq: 6, at: 5, summary: '思考' }), undefined)
   assert.equal(toStreamItem({ k: 'file', seq: 7, at: 5, path: 'a.ts', op: 'mod' }), undefined)
+})
+
+// ── 历史回放（对话页空白的根因）──────────────────────────────────────────
+
+test('user/message 必须映射（否则历史里"我说的话"会消失）', () => {
+  const item = toTraceItem({ type: 'user/message', seq: 1, at: 1, data: { text: '你好' } })
+  assert.equal(item.k, 'user')
+  assert.equal(item.text, '你好')
+})
+
+test('user 消息能投影成聊天流', () => {
+  const stream = toStreamItem({ k: 'user', seq: 1, at: 1, text: '你好' })
+  assert.equal(stream.k, 'user')
+  assert.equal(stream.text, '你好')
 })
 
 console.log(`\n${passed} passed`)

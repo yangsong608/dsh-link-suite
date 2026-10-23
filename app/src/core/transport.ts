@@ -33,6 +33,16 @@ interface Pending {
 
 export class Link {
   #sock: UniApp.SocketTask | undefined
+  /**
+   * 连接是否已 open。
+   *
+   * 必须单独记：`uni.connectSocket` 返回的 SocketTask 是**异步**的，
+   * 对象创建成功不代表通道可用。只判断 `#sock !== undefined` 就发帧，
+   * 帧会在 open 之前发出去而丢失——表现正是"一直配对中然后超时"。
+   */
+  #opened = false
+  /** 等待 open 的调用方。open 后统一放行，close/error 时统一失败。 */
+  #waiters: { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }[] = []
   #pending = new Map<number, Pending>()
   #listeners = new Map<string, Set<Listener>>()
   #nextId = 1
@@ -77,7 +87,10 @@ export class Link {
 
     sock.onOpen(() => {
       this.#attempt = 0
+      this.#opened = true
       this.#setStatus('online')
+      // 放行所有在等连接就绪的调用
+      for (const w of this.#waiters.splice(0)) w.resolve()
     })
 
     sock.onMessage((res) => {
@@ -94,6 +107,9 @@ export class Link {
 
     sock.onClose(() => {
       this.#sock = undefined
+      this.#opened = false
+      // 连接没建起来就断了：把等待者也失败掉，否则它们会一直挂着到超时
+      for (const w of this.#waiters.splice(0)) w.reject(new RpcError('host/unavailable', '连接已断开'))
       this.#failAllPending(new RpcError('host/unavailable', '连接已断开'))
       if (this.#closed) return
       this.#setStatus('offline')
@@ -102,6 +118,8 @@ export class Link {
 
     sock.onError(() => {
       // onError 之后通常还有 onClose，这里只记录，不重复重连
+      this.#opened = false
+      for (const w of this.#waiters.splice(0)) w.reject(new RpcError('host/unavailable', '无法连接主机'))
       this.#setStatus('offline')
     })
   }
@@ -182,7 +200,51 @@ export class Link {
    * 调用一个方法。错误按 `recoveryFor` 分类：
    * retry（网络）→ 由调用方重试；unlock（锁定）→ 弹解锁层；re-pair → 重新配对。
    */
+  /**
+   * 等待连接就绪。
+   *
+   * 这是配对超时的**真正根因**：connectDevice() 之后立刻 call('pair.finish')，
+   * 而 connectSocket 是异步的——SocketTask 对象已创建（所以 `#sock !== undefined`），
+   * 但 WebSocket 还没 open。此时 send 的帧会直接丢失，宿主永远收不到，
+   * 客户端等到超时。表现就是"扫码成功 → 一直配对中 → 超时"。
+   *
+   * 另外把「从未连接」与「连接中」区分开：前者立刻报错（用户能马上重试），
+   * 后者最多等 connectTimeoutMs。
+   */
+  #waitOpen(timeoutMs: number): Promise<void> {
+    if (this.#opened) return Promise.resolve()
+    if (this.#sock === undefined) {
+      return Promise.reject(new RpcError('host/unavailable', '尚未连接主机'))
+    }
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      const waiter = {
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+        resolve: (): void => {
+          if (settled) return
+          settled = true
+          clearTimeout(waiter.timer)
+          resolve()
+        },
+        reject: (e: Error): void => {
+          if (settled) return
+          settled = true
+          clearTimeout(waiter.timer)
+          reject(e)
+        },
+      }
+      waiter.timer = setTimeout(() => {
+        const i = this.#waiters.indexOf(waiter)
+        if (i >= 0) this.#waiters.splice(i, 1)
+        waiter.reject(new RpcError('host/unavailable', '连接主机超时，请检查地址与网络'))
+      }, timeoutMs)
+      this.#waiters.push(waiter)
+    })
+  }
+
   async call<T = unknown>(method: Method, params: Record<string, unknown> = {}, timeoutMs = 20_000): Promise<T> {
+    // 先等连接就绪：不等的话帧会在 open 之前被丢弃（见 #waitOpen 注释）
+    await this.#waitOpen(Math.min(timeoutMs, 8000))
     if (this.#sock === undefined) {
       throw new RpcError('host/unavailable', '尚未连接主机')
     }

@@ -14,7 +14,7 @@ import MossBoot from '@/components/moss/MossBoot.vue'
 import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, activeDevice, skinClass, themeClass, liteClass, type DeviceCard } from '@/core/store'
 import { haptic } from '@/core/haptic'
-import { connectDevice, refreshAll } from '@/core/link'
+import { connectDevice, disconnect, refreshAll, currentLink } from '@/core/link'
 import { decodePairUri } from '@dsh-link/protocol'
 
 /**
@@ -59,15 +59,50 @@ function statusOf(d: DeviceCard): 'online' | 'connecting' | 'offline' | 'needs-a
   return 'online'
 }
 
+/**
+ * 设备卡的元信息行。
+ *
+ * 修正过两处：
+ *   1. 原来读 `d.host?.platform`，但 DeviceCard 的字段是 `platform`（无 host 嵌套），
+ *      于是一直拿不到平台名——卡片看起来"什么信息都没有"。
+ *   2. 原来离线时硬编码「上次在线 3 小时前」，那是演示数据留下的假文案。
+ *      现在按 lastSeen 算相对时间。
+ */
 function metaLine(d: DeviceCard): string {
-  if (d.conn === 'offline') return '上次在线 3 小时前'
   const bits: string[] = []
-  if (d.host?.platform) bits.push(d.host.platform)
-  if (d.endpointKind) {
-    bits.push(d.endpointKind === 'lan' ? '局域网' : d.endpointKind === 'relay' ? '中继' : 'Tailscale')
+  if (d.platform) bits.push(platformLabel(d.platform))
+  if (d.endpoint?.kind) {
+    bits.push(d.endpoint.kind === 'lan' ? '局域网' : d.endpoint.kind === 'relay' ? '中继' : d.endpoint.kind === 'tailscale' ? 'Tailscale' : '自定义')
   }
-  if (d.latencyMs !== undefined) bits.push(`${d.latencyMs}ms`)
+  if (d.conn === 'offline' && typeof d.lastSeen === 'number') {
+    bits.push(`上次在线 ${relativeTime(d.lastSeen)}`)
+  } else if (typeof d.latencyMs === 'number') {
+    bits.push(`${d.latencyMs}ms`)
+  }
   return bits.join(' · ')
+}
+
+function platformLabel(p: string): string {
+  switch (p) {
+    case 'darwin': return 'macOS'
+    case 'win32': return 'Windows'
+    case 'linux': return 'Linux'
+    case 'ios': return 'iOS'
+    case 'android': return 'Android'
+    default: return p
+  }
+}
+
+/** 相对时间：刚才 / N 分钟前 / N 小时前 / N 天前。 */
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts
+  if (!Number.isFinite(diff) || diff < 0) return '刚刚'
+  const min = Math.floor(diff / 60_000)
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const hour = Math.floor(min / 60)
+  if (hour < 24) return `${hour} 小时前`
+  return `${Math.floor(hour / 24)} 天前`
 }
 
 function usageLine(d: DeviceCard): string {
@@ -136,6 +171,113 @@ const needsAddress = computed(() => {
   const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
   return device?.endpoint?.url === undefined
 })
+
+/**
+ * 设备长按菜单（设计文档 08 §3.1 的要求，之前漏实现）。
+ *
+ * 为什么是长按而不是卡片上放按钮：
+ *   卡片是"点进去"的主要入口，放按钮会把可点区域切碎，
+ *   而管理是低频操作，藏进长按正合适。
+ */
+function deviceMenu(d: DeviceCard): void {
+  haptic('medium')
+  uni.showActionSheet({
+    itemList: ['重命名', '查看详情', '断开连接', '移除设备'],
+    success: (res) => {
+      if (res.tapIndex === 0) void renameDevice(d)
+      else if (res.tapIndex === 1) void showDeviceDetail(d)
+      else if (res.tapIndex === 2) disconnectDevice(d)
+      else if (res.tapIndex === 3) void removeDevice(d)
+    },
+  })
+}
+
+async function renameDevice(d: DeviceCard): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+  uni.showModal({
+    title: '重命名设备',
+    editable: true,
+    content: d.name,
+    placeholderText: d.name,
+    success: async (res) => {
+      if (!res.confirm) return
+      const label = String(res.content ?? '').trim()
+      if (label.length === 0) return
+      try {
+        await link.call('device.rename', { deviceId: d.deviceId, label })
+        // DeviceCard.name 来自 DeviceInfo 的只读字段，这里就地替换整条
+        const idx = state.devices.findIndex((x) => x.deviceId === d.deviceId)
+        if (idx >= 0) {
+          const cur = state.devices[idx]
+          if (cur !== undefined) state.devices[idx] = { ...cur, name: label }
+        }
+        uni.showToast({ title: '已重命名', icon: 'none' })
+      } catch (error) {
+        uni.showToast({ title: error instanceof Error ? error.message.slice(0, 16) : '失败', icon: 'none' })
+      }
+    },
+  })
+}
+
+function showDeviceDetail(d: DeviceCard): void {
+  const lines = [
+    `名称：${d.name}`,
+    `平台：${platformLabel(d.platform)}`,
+    `角色：${d.role}`,
+    `设备 ID：${d.deviceId}`,
+    `连接：${d.endpoint?.url ?? '（未知）'}`,
+    `状态：${statusText(statusOf(d))}`,
+    d.lastSeen ? `最近活跃：${relativeTime(d.lastSeen)}` : '',
+  ].filter((x) => x.length > 0)
+  uni.showModal({ title: '设备详情', content: lines.join('\n'), showCancel: false, confirmText: '关闭' })
+}
+
+function statusText(s: ReturnType<typeof statusOf>): string {
+  switch (s) {
+    case 'online': return '在线'
+    case 'connecting': return '连接中'
+    case 'offline': return '离线'
+    case 'needs-auth': return '需配对'
+    case 'locked': return '已锁定'
+    default: return '未知'
+  }
+}
+
+function disconnectDevice(d: DeviceCard): void {
+  disconnect()
+  const idx = state.devices.findIndex((x) => x.deviceId === d.deviceId)
+  if (idx >= 0) {
+    const cur = state.devices[idx]
+    if (cur !== undefined) state.devices[idx] = { ...cur, conn: 'offline' }
+  }
+  haptic('light')
+  uni.showToast({ title: '已断开', icon: 'none' })
+}
+
+async function removeDevice(d: DeviceCard): Promise<void> {
+  uni.showModal({
+    title: `移除「${d.name}」？`,
+    content: '这台设备需要重新配对才能再连接。已有会话不受影响。',
+    confirmText: '移除',
+    confirmColor: '#ff5c4d',
+    success: async (res) => {
+      if (!res.confirm) return
+      const link = currentLink()
+      if (link !== undefined) {
+        try {
+          await link.call('device.revoke', { deviceId: d.deviceId })
+        } catch {
+          // 撤销失败也允许本地移除，避免列表里留下死条目
+        }
+      }
+      state.devices = state.devices.filter((x) => x.deviceId !== d.deviceId)
+      if (state.activeId === d.deviceId) state.activeId = state.devices[0]?.deviceId ?? ''
+      haptic('heavy')
+      uni.showToast({ title: '已移除', icon: 'none' })
+    },
+  })
+}
 
 function addDevice(): void {
   haptic('medium')
@@ -350,7 +492,13 @@ onLoad(() => {
         <text class="mono t3">{{ otherDevices.length }}</text>
       </view>
 
-      <view v-for="d in otherDevices" :key="d.deviceId" class="row" @tap="open(d)">
+      <view
+        v-for="d in otherDevices"
+        :key="d.deviceId"
+        class="row"
+        @tap="open(d)"
+        @longpress="deviceMenu(d)"
+      >
         <MossTerm
           :title="d.name"
           :status="statusOf(d)"

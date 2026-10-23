@@ -23,7 +23,15 @@ export interface HostSessionSummary {
   readonly running: boolean
   readonly blank: boolean
   readonly cwd?: string
-  readonly projections?: { readonly title?: string; readonly status?: string }
+  /**
+   * 投影块。真实结构是 { kind, asOfSeq, values: {...} }，
+   * 标题在 values.title（来自 session/title 事件）。
+   */
+  readonly projections?: {
+    readonly kind?: 'cached' | 'sequenced'
+    readonly asOfSeq?: number
+    readonly values?: Readonly<Record<string, unknown>>
+  }
 }
 
 /**
@@ -41,8 +49,20 @@ export function sessionStatus(summary: HostSessionSummary): SessionStatus {
 
 /** dsh 的 title 来自 projections；没有就退化成 cwd 的尾段。 */
 export function sessionTitle(summary: HostSessionSummary): string {
-  const projected = summary.projections?.title
+  /**
+   * 真实标题在 `projections.values.title`，不是 `projections.title`。
+   *
+   * dsh 的结构是 SessionProjectionHints = { kind, asOfSeq, values: {...} }，
+   * 标题是 values 里的一个键（来自 session/title 事件的投影）。
+   * 之前少写了一层 values，导致永远取不到，退化成 cwd 尾段——
+   * 于是所有会话都叫 "deepseek"（工作区目录名），和 dsh 里完全对不上。
+   */
+  const values = summary.projections?.values as Record<string, unknown> | undefined
+  const projected = values?.['title']
   if (typeof projected === 'string' && projected.trim().length > 0) return projected
+  // 兼容：有些版本可能把 title 平铺在 projections 上
+  const flat = (summary.projections as { title?: unknown } | undefined)?.title
+  if (typeof flat === 'string' && flat.trim().length > 0) return flat
   const cwd = summary.cwd
   if (typeof cwd === 'string' && cwd.length > 0) {
     const parts = cwd.split(/[\\/]/).filter((p) => p.length > 0)
@@ -86,6 +106,55 @@ export interface HostSessionEvent {
 }
 
 const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined)
+
+/**
+ * 从工具参数里抽出"这一行该显示什么"。
+ *
+ * 目标：让 `▸ Bash  npm test` 这种一行能看懂，而不是 `▸ tool`。
+ * 不同工具的参数字段不同，这里按常见约定猜，猜不到就返回 undefined（只显示工具名）。
+ */
+function toolTarget(tool: string, argsRaw: string): string | undefined {
+  if (argsRaw.length === 0) return undefined
+  let parsed: Record<string, unknown> | undefined
+  try {
+    const v: unknown = JSON.parse(argsRaw)
+    if (typeof v === 'object' && v !== null) parsed = v as Record<string, unknown>
+  } catch {
+    // 不是 JSON：直接取第一行（有些工具传的是裸命令）
+    const first = argsRaw.split('\n')[0]?.trim()
+    return first !== undefined && first.length > 0 ? first.slice(0, 120) : undefined
+  }
+  if (parsed === undefined) return undefined
+
+  const keys = ['command', 'cmd', 'path', 'file_path', 'pattern', 'query', 'url', 'prompt', 'description']
+  for (const k of keys) {
+    const v = parsed[k]
+    if (typeof v === 'string' && v.trim().length > 0) {
+      const oneLine = v.split('\n')[0]?.trim() ?? v
+      return oneLine.slice(0, 120)
+    }
+  }
+  // 认不出：用工具名占位，至少不显示一串 JSON
+  return tool === 'tool' ? undefined : undefined
+}
+
+/** 从 ToolResultMessage 里取一句可读摘要（正文太长，只留开头）。 */
+function extractResultSummary(message: unknown): string | undefined {
+  if (typeof message !== 'object' || message === null) return undefined
+  const content = (message as { content?: unknown }).content
+  if (typeof content === 'string') return content.replace(/\s+/g, ' ').trim()
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (typeof part === 'object' && part !== null) {
+        const text = (part as { text?: unknown }).text
+        if (typeof text === 'string' && text.trim().length > 0) {
+          return text.replace(/\s+/g, ' ').trim()
+        }
+      }
+    }
+  }
+  return undefined
+}
 const asNumber = (value: unknown): number | undefined => (typeof value === 'number' ? value : undefined)
 
 /**
@@ -111,31 +180,71 @@ export function toTraceItem(event: HostSessionEvent, redacted = false): TraceIte
       return { ...base, k: 'text', text: redacted ? '' : text.slice(0, 4000) }
     }
 
+    // 用户自己说的话必须出现在历史里。
+    // 之前的映射表漏了 user/message，导致回放历史时"我说过的话"全被丢弃，
+    // 只剩 agent 的回复——看起来像会话不完整。
+    case 'user/message': {
+      const text = asString(data['text'])
+      if (text === undefined) return undefined
+      return { ...base, k: 'user', text: redacted ? '' : text.slice(0, 4000) }
+    }
+
+    /**
+     * 工具调用。
+     *
+     * 真实字段是 `name` / `arguments`（见 dsh core/session 的 SessionEventMap），
+     * 不是 toolName / input。之前取错字段，于是永远落到兜底值 'tool'——
+     * 界面上就是一长串 `▸ tool`，看不出到底在干什么。
+     *
+     * 另外这里把 arguments 解析成"可读目标"：命令取第一行，文件取路径，
+     * 让用户一眼知道"它在跑什么"，而不是看一串 JSON。
+     */
     case 'tool/call': {
-      const tool = asString(data['toolName']) ?? asString(data['tool']) ?? 'tool'
-      const target = asString(data['target'])
-      const input = asString(data['input'])
+      const tool = asString(data['name']) ?? asString(data['toolName']) ?? 'tool'
+      const argsRaw = asString(data['arguments']) ?? asString(data['input']) ?? ''
+      const target = toolTarget(tool, argsRaw)
       return {
         ...base,
         k: 'tool',
         tool,
+        phase: 'call',
         ...(target === undefined ? {} : { target }),
-        ...(input === undefined || redacted ? {} : { input: input.slice(0, 200) }),
+        ...(argsRaw.length === 0 || redacted ? {} : { input: argsRaw.slice(0, 200) }),
+        // callId 用于把 result 合并回同一条
+        ...(asString(data['callId']) === undefined ? {} : { callId: asString(data['callId']) as string }),
       }
     }
 
+    /**
+     * 工具结果。
+     *
+     * 真实结构是 { turn, step, message: ToolResultMessage, error?, meta? }。
+     * 这里只抽取"成功/失败"与可读摘要，正文交给 trace.detail（未实现）。
+     *
+     * 带 callId 返回：上层据此**合并到对应的 tool/call 条目**，而不是再插一条。
+     * 之前 call 与 result 各推一条，界面上就是"无数多个 tool"——
+     * 一次工具调用变成两行，长会话里滚得看不到对话。
+     */
     case 'tool/result': {
-      const tool = asString(data['toolName']) ?? asString(data['tool']) ?? 'tool'
-      const output = asString(data['output'])
-      const ok = data['ok'] === true ? true : data['ok'] === false ? false : undefined
-      const ms = asNumber(data['ms'])
+      const err = data['error'] as { reason?: unknown; code?: unknown } | undefined
+      const ok = err === undefined
+      const message = data['message'] as { content?: unknown } | undefined
+      const summary = extractResultSummary(message)
+      /**
+       * tool/result 事件本身**不带工具名**（结构里只有 turn/step/message/error/meta）。
+       * 所以这里给空串而不是 'tool'：上层按 callId 合并时保留 call 那条的名字，
+       * 若 result 先到（少见），空串也不会覆盖掉已知的名字。
+       */
+      const nameFromMeta = asString((data['meta'] as { name?: unknown } | undefined)?.name)
+      const nameFromData = asString(data['name']) ?? asString(data['toolName'])
       return {
         ...base,
         k: 'tool',
-        tool,
-        ...(output === undefined || redacted ? {} : { output: output.slice(0, 400) }),
-        ...(ok === undefined ? {} : { ok }),
-        ...(ms === undefined ? {} : { ms }),
+        phase: 'result',
+        tool: nameFromMeta ?? nameFromData ?? '',
+        ...(summary === undefined || redacted ? {} : { output: summary.slice(0, 400) }),
+        ok,
+        ...(asString(data['callId']) === undefined ? {} : { callId: asString(data['callId']) as string }),
       }
     }
 
@@ -193,12 +302,19 @@ export function toStreamItem(item: TraceItem): StreamItem | undefined {
       return {
         k: 'activity',
         tool: item.tool,
-        summary: item.target ?? item.tool,
+        // summary 对 result 帧是空的（result 没有 target）——这是对的：
+        // 客户端会把它合并到上一行，不覆盖已有的命令摘要
+        summary: item.target ?? '',
         ...(item.ms === undefined ? {} : { ms: item.ms }),
         ...(item.ok === undefined ? {} : { ok: item.ok }),
+        ...(item.callId === undefined ? {} : { callId: item.callId }),
+        // phase 是合并的关键：没有它客户只会把 result 当成一条新行
+        ...(item.phase === undefined ? {} : { phase: item.phase }),
       }
     case 'approval':
       return { k: 'approval', id: item.id, cmd: item.cmd, ...(item.risk === undefined ? {} : { risk: item.risk }) }
+    case 'user':
+      return { k: 'user', text: item.text, at: item.at }
     case 'note':
       // 只把"轮次结束"这类结构性 note 投影成 done；其它 note 不进聊天流。
       if (item.text === '本轮结束') return { k: 'done', at: item.at, ok: true }

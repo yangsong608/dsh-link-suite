@@ -159,17 +159,18 @@ await test('重启后设备表从文件恢复，令牌仍可用', async () => {
   }
 })
 
-await test('pendingPairs 只返回未消费且未过期的码', async () => {
+await test('pendingPairs 只返回"等待确认"的码：未消费、未过期、未批准', async () => {
   await withRegistry(async ({ registry }) => {
-    const s1 = registry.startPair(60_000)
-    const s2 = registry.startPair(1)
-    registry.approvePair(s1.code)
+    const waiting = registry.startPair(60_000, false) // 等确认
+    const expired = registry.startPair(1, false)      // 会过期
+    const approved = registry.startPair(60_000, true) // 已批准
     await new Promise((r) => setTimeout(r, 5))
+
     const pending = registry.pendingPairs()
-    assert.equal(pending.length, 1, '过期的码不应出现在待确认列表')
-    assert.equal(pending[0].code, s1.code)
-    assert.equal(pending[0].approved, true)
-    assert.equal(pending.some((p) => p.code === s2.code), false)
+    assert.equal(pending.length, 1, '只有真正等待确认的那一个')
+    assert.equal(pending[0].code, waiting.code)
+    assert.equal(pending.some((p) => p.code === expired.code), false, '过期的不该出现')
+    assert.equal(pending.some((p) => p.code === approved.code), false, '已批准的不该出现')
   })
 })
 
@@ -180,6 +181,48 @@ await test('标签为空时给一个明确默认值（UI 不能显示空白设�
     const outcome = await registry.finishPair({ code: session.code, label: '   ', platform: 'ios' })
     assert.equal(outcome.ok, true)
     assert.equal(outcome.result.device.label, '未命名设备')
+  })
+})
+
+// ── 待确认列表的语义（真实踩过的 bug）─────────────────────────────────────
+
+await test('PC 预批准的码不进待确认列表（否则面板一直显示"有设备等待确认"）', async () => {
+  await withRegistry(async ({ registry }) => {
+    const pc = registry.startPair(120_000, true)
+    assert.equal(pc.approved, true)
+    assert.equal(
+      registry.pendingPairs().length,
+      0,
+      'PC 自己生成的码已经批准过，不该提示"等待确认"——用户根本没扫码',
+    )
+  })
+})
+
+await test('手机发起的码进待确认列表，批准后移出', async () => {
+  await withRegistry(async ({ registry }) => {
+    const phone = registry.startPair(120_000, false)
+    assert.equal(phone.approved, false)
+    const pending = registry.pendingPairs()
+    assert.equal(pending.length, 1)
+    assert.equal(pending[0].code, phone.code)
+
+    registry.approvePair(phone.code)
+    assert.equal(registry.pendingPairs().length, 0, '批准后不再是"待确认"')
+  })
+})
+
+await test('待确认列表不含已过期与已消费的码', async () => {
+  await withRegistry(async ({ registry }) => {
+    const stale = registry.startPair(1, false)
+    const used = registry.startPair(60_000, true)
+    await new Promise((r) => setTimeout(r, 5))
+    // 消费掉 used
+    registry.approvePair(used.code)
+    await registry.finishPair({ code: used.code, label: 'X', platform: 'ios' })
+
+    const codes = registry.pendingPairs().map((p) => p.code)
+    assert.equal(codes.includes(stale.code), false, '过期的不该出现')
+    assert.equal(codes.includes(used.code), false, '已消费的不该出现')
   })
 })
 

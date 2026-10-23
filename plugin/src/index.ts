@@ -212,6 +212,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
         if (deviceId === undefined) return false
         return subscriptions.open(sessionId, connId, deviceId)
       },
+      pushHistory: (sessionId, connId) => subscriptions.pushHistory(sessionId, connId),
     },
     approvals: {
       settle: (id, outcome, deviceId) => approvals.settle(id, outcome, deviceId),
@@ -536,6 +537,21 @@ function makeHttpHandler(
         await saveRuntime(LINK_DIR, { relayUrl: next })
         relay.endpoints = recomputeEndpoints()
         json(200, { ok: true, relayUrl: next, endpoints: relay.endpoints })
+        return
+      }
+
+      // 设备重命名：界面上让用户给机器起名（"书房 Mac"），
+      // 否则一堆 "dev_xxxx" 根本分不清哪台是哪台。
+      if (url.pathname === '/dsh-link/pair/rename' && req.method === 'POST') {
+        const body = await readJson(req)
+        const deviceId = String(body['deviceId'] ?? '')
+        const label = String(body['label'] ?? '').trim()
+        if (label.length === 0 || label.length > 32) {
+          json(400, { error: '名称需为 1-32 个字符' })
+          return
+        }
+        const done = await devices?.rename(deviceId, label)
+        json(done === true ? 200 : 404, done === true ? { ok: true, deviceId, label } : { error: '设备不存在' })
         return
       }
 
