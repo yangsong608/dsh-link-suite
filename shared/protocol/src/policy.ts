@@ -73,6 +73,8 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   'session.list': P('viewer'),
   // 创建会话会落盘（新建一个持久会话），视为写操作
   'session.create': P('operator', 'unlocked'),
+  // 只读金额：不涉及会话内容，viewer 即可
+  'cost.summary': P('viewer'),
   'session.prompt': P('operator', 'unlocked'),
   'session.cancel': P('operator', 'unlocked'),
   'session.follow': P('viewer'),

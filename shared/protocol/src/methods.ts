@@ -63,6 +63,8 @@ export const METHODS = [
 
   // 会话
   'session.create',
+  // 费用与峰谷（数据来自 dsh-cost-meter；宿主没装就返回 available:false）
+  'cost.summary',
   'session.list',
   'session.prompt',
   'session.modelCatalog',
