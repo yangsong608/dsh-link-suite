@@ -288,6 +288,17 @@ function toStream(ev, seq, isHistory) {
           peak: { peak: true, weekend: false, msUntilSwitch: 2 * 3600 * 1000, next: 'offPeak' },
         })
         case 'session.diff': return reply(window.__MOCK__.hunks)
+        case 'fs.list': {
+          const path = String(frame.p?.path ?? '')
+          const items = window.__MOCK__.tree[path] ?? []
+          return reply({ root: '/mock', path, items })
+        }
+        case 'fs.read': {
+          const path = String(frame.p?.path ?? '')
+          const f = window.__MOCK__.files[path]
+          if (f === undefined) return fail('fs/not-found', '路径不存在')
+          return reply(f)
+        }
         case 'session.prompt':
           return reply({ ok: true, sessionId: frame.p?.sessionId })
         case 'session.cancel':
@@ -361,6 +372,18 @@ async function main() {
     await page.evaluateOnNewDocument((mock) => { window.__MOCK__ = mock }, {
       devices: DEVICES, workspaces: WORKSPACES, sessions: SESSIONS, models: MODELS, history: HISTORY,
       queue: QUEUE, changes: CHANGES, hunks: HUNKS,
+      tree: {
+        '': [{ name: 'app', dir: true }, { name: 'docs', dir: true }, { name: 'README.md', dir: false }],
+        app: [{ name: 'core', dir: true }],
+        'app/core': [{ name: 'upload.ts', dir: false }],
+        docs: [{ name: '05-上传通道.md', dir: false }],
+      },
+      files: {
+        'README.md': { path: 'README.md', kind: 'markdown', size: 812, text: '# MOSS Link\n\n把 dsh 带到手机上。\n\n- 配对即用\n- 数据不过服务器\n' },
+        'app/core/upload.ts': { path: 'app/core/upload.ts', kind: 'text', size: 520, text: 'export async function upload(file: File) {\n  const CHUNK = 8 * 1024 * 1024\n  for (let offset = 0; offset < file.size; offset += CHUNK) {\n    await transport.sendChunk(file.slice(offset, offset + CHUNK), offset)\n  }\n}\n' },
+        'docs/05-上传通道.md': { path: 'docs/05-上传通道.md', kind: 'markdown', size: 300, text: '## 分片上传\n\n偏移量必须持久化。\n' },
+        'app/src/core/upload.ts': { path: 'app/src/core/upload.ts', kind: 'text', size: 520, text: 'export async function upload(file) {\n  // 分片\n}\n' },
+      },
     })
     // 设备表落盘，让首页直接进入"已配对"状态
     await page.evaluateOnNewDocument((seed, isLight) => {

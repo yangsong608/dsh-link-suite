@@ -9,6 +9,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { readFile, readdir, stat } from 'node:fs/promises'
+import { extname, join } from 'node:path'
 
 import { encodePairUri, encodeQr, pairPayloadFromEndpoint } from '@dsh-link/protocol'
 
@@ -705,6 +707,71 @@ export function createHandlers(): GatewayHandlers {
       }
     },
 
+    // ── 文件浏览（只读，限定在工作区内）────────────────────────────────────
+    //
+    // 为什么自己做而不是调宿主：dsh 的 fs 能力分散在 workspaceFiles / 各工具内部，
+    // 没有统一的「按路径读文件」Remote。插件本身跑在宿主进程里，直接读盘即可。
+    //
+    // **安全边界**：所有路径先 resolve 再 realpath，必须落在工作区根目录之内，
+    // 否则拒绝。符号链接逃逸也在 realpath 之后判断，避免 ../ 与软链绕过。
+    'fs.list': async (rc, p) => {
+      const { root, rel } = await resolveWorkspacePath(rc, p)
+      const target = join(root, rel)
+      const safe = await assertInside(root, target)
+      const entries = await readdir(safe, { withFileTypes: true })
+      const items = entries
+        .filter((e) => !e.name.startsWith('.'))
+        .map((e) => ({ name: e.name, dir: e.isDirectory() }))
+        .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
+        .slice(0, 300)
+      return { root, path: rel, items }
+    },
+
+    'fs.stat': async (rc, p) => {
+      const { root, rel } = await resolveWorkspacePath(rc, p)
+      const safe = await assertInside(root, join(root, rel))
+      const st = await stat(safe)
+      return { path: rel, dir: st.isDirectory(), size: st.size, mtime: st.mtimeMs }
+    },
+
+    'fs.read': async (rc, p) => {
+      const { root, rel } = await resolveWorkspacePath(rc, p)
+      const safe = await assertInside(root, join(root, rel))
+      const info = await stat(safe)
+      if (info.isDirectory()) throw new RpcError('rpc/bad-args', '这是一个目录')
+      if (info.size > MAX_READ_BYTES) {
+        return { path: rel, kind: 'too-large', size: info.size }
+      }
+      const ext = extname(safe).toLowerCase()
+
+      // 图片：直接给 data URI，客户端用 <image> 渲染
+      if (IMAGE_EXT.has(ext)) {
+        const buf = await readFile(safe)
+        return {
+          path: rel,
+          kind: 'image',
+          mime: MIME_BY_EXT[ext] ?? 'application/octet-stream',
+          dataUri: `data:${MIME_BY_EXT[ext] ?? 'application/octet-stream'};base64,${buf.toString('base64')}`,
+          size: info.size,
+        }
+      }
+
+      const buf = await readFile(safe)
+      // 简易二进制判定：出现 NUL 就当二进制，避免把图片/压缩包当文本刷屏
+      const sample = buf.subarray(0, 4096)
+      if (sample.includes(0)) {
+        return { path: rel, kind: 'binary', size: info.size }
+      }
+      const text = buf.toString('utf8')
+      return {
+        path: rel,
+        kind: ext === '.md' || ext === '.markdown' ? 'markdown' : 'text',
+        text: text.slice(0, MAX_TEXT_CHARS),
+        truncated: text.length > MAX_TEXT_CHARS,
+        size: info.size,
+      }
+    },
+
     // ── 费用与峰谷 ────────────────────────────────────────────────────────
     //
     // 数据**转发**自 dsh-cost-meter，不自算金额：它的账本按真实 token 用量与
@@ -783,9 +850,6 @@ export function createHandlers(): GatewayHandlers {
     },
 
     // ── M2 待实现：文件浏览（只读；上传在 M1）──────────────────────────────
-    'fs.list': notImplemented('fs.list'),
-    'fs.stat': notImplemented('fs.stat'),
-    'fs.read': notImplemented('fs.read'),
 
 
     // ── M2 待实现：仓库与 git（全部只读，走 child_process 调 git）──────────
@@ -1005,4 +1069,63 @@ async function resolveCostMeterPricing(): Promise<string | undefined> {
     }
   }
   return undefined
+}
+
+/** 单个文件读取上限：手机端再大也读不动，而且会撑爆单帧。 */
+const MAX_READ_BYTES = 2 * 1024 * 1024
+const MAX_TEXT_CHARS = 200_000
+
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'])
+const MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+}
+
+/**
+ * 把客户端给的相对路径解析到工作区根目录。
+ *
+ * 客户端只传 sessionId + 相对路径（可选 root 覆盖）。根目录来自
+ * workspace.list 的 path：会话归属哪个工作区，就在哪个目录里浏览。
+ */
+async function resolveWorkspacePath(
+  rc: RouteContext,
+  p: Record<string, unknown>,
+): Promise<{ root: string; rel: string }> {
+  const sessionId = typeof p['sessionId'] === 'string' ? p['sessionId'] : ''
+  const rel = typeof p['path'] === 'string' ? p['path'] : ''
+
+  const registry = rc.ctx.get<WorkspaceRegistry>('workspaceRegistry', false)
+  const workspaces = registry?.list?.() ?? []
+  let root = ''
+  for (const ws of workspaces) {
+    const ids = Array.isArray(ws.sessionIds) ? ws.sessionIds.map(String) : []
+    if (sessionId.length > 0 && ids.includes(sessionId)) { root = ws.path; break }
+  }
+  if (root.length === 0) root = workspaces[0]?.path ?? ''
+  if (root.length === 0) throw new RpcError('host/unavailable', '宿主没有工作区')
+
+  return { root, rel }
+}
+
+/**
+ * 校验目标路径没有逃出根目录。
+ *
+ * 必须先 realpath 再比较：`../` 能被 resolve 掉，但符号链接指向外面
+ * 只有 realpath 才能发现。
+ */
+async function assertInside(root: string, target: string): Promise<string> {
+  const { realpath } = await import('node:fs/promises')
+  let realRoot: string
+  let realTarget: string
+  try {
+    realRoot = await realpath(root)
+    realTarget = await realpath(target)
+  } catch {
+    throw new RpcError('fs/not-found', '路径不存在')
+  }
+  const withSep = realRoot.endsWith('/') ? realRoot : `${realRoot}/`
+  if (realTarget !== realRoot && !realTarget.startsWith(withSep)) {
+    throw new RpcError('auth/forbidden', '路径不在工作区内')
+  }
+  return realTarget
 }

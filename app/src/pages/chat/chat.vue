@@ -15,6 +15,7 @@ import { currentLink, connectDevice, refreshAll, setSessionListener } from '@/co
 import MossDot from '@/components/moss/MossDot.vue'
 import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
 import MossMarkdown from '@/components/MossMarkdown.vue'
+import MossFileView from '@/components/MossFileView.vue'
 
 type Item =
   | { k: 'user'; text: string; at: string }
@@ -154,6 +155,22 @@ const fileItems = ref<{ path: string; op: string; additions?: number; deletions?
 /** 产物是近似的：只有文件工具的记录，没有 shell/git。必须告诉用户。 */
 const changesNote = ref('')
 const diffView = ref<{ path: string; hunks: { t: string; s: string }[] } | undefined>(undefined)
+
+/** 文件查看器（按格式渲染）。tap 看当前内容，长按看本轮差异。 */
+const fileOpen = ref(false)
+const filePath = ref('')
+
+function openFile(path: string): void {
+  haptic('light')
+  filePath.value = path
+  fileOpen.value = true
+}
+
+function browseWorkspace(): void {
+  haptic('light')
+  filePath.value = ''
+  fileOpen.value = true
+}
 
 /**
  * 统一弹层控制器。
@@ -1063,10 +1080,14 @@ onUnmounted(() => {
         <text class="empty-t">这一轮还没有产物</text>
         <text class="empty-d t3">agent 写入或修改文件后会出现在这里。</text>
       </view>
+      <view class="browse-row" @tap="browseWorkspace">
+        <text class="browse-t">浏览工作区文件</text>
+        <view class="chev" />
+      </view>
       <view v-if="fileItems.length > 0 && changesNote.length > 0" class="changes-note t3">
         {{ changesNote }}
       </view>
-      <view v-for="(f, i) in fileItems" :key="i" class="file-row" @tap="openDiff(f)">
+      <view v-for="(f, i) in fileItems" :key="i" class="file-row" @tap="openFile(f.path)" @longpress="openDiff(f)">
         <view class="file-op" :class="f.op">{{ opLabel(f.op) }}</view>
         <text class="file-p mono">{{ f.path }}</text>
         <text v-if="f.additions !== undefined" class="file-n mono">
@@ -1181,12 +1202,19 @@ onUnmounted(() => {
       <view v-if="!rightOpen" class="rail-collapsed" @tap="rightOpen = true">产物</view>
       <scroll-view v-if="rightOpen" class="rail-scroll" scroll-y>
         <view v-if="fileItems.length === 0" class="rail-empty t3">这一轮还没有产物</view>
-        <view v-for="(f, i) in fileItems" :key="i" class="file-row" @tap="openDiff(f)">
+        <view v-for="(f, i) in fileItems" :key="i" class="file-row" @tap="openFile(f.path)" @longpress="openDiff(f)">
           <view class="file-op" :class="f.op">{{ opLabel(f.op) }}</view>
           <text class="file-p mono">{{ f.path }}</text>
         </view>
       </scroll-view>
     </view>
+
+    <MossFileView
+      :visible="fileOpen"
+      :session-id="sessionId"
+      :path="filePath"
+      @update:visible="fileOpen = $event"
+    />
 
     <!-- 统一弹层：菜单 / 确认 / 输入 -->
     <MossSheet
@@ -1716,6 +1744,28 @@ onUnmounted(() => {
 .queue-acts { flex: none; display: flex; gap: 10px; }
 .qact { font-size: 11.5px; color: var(--acc); }
 .qact.danger { color: var(--danger); }
+
+.browse-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  border: 1px dashed var(--bd);
+}
+
+.browse-row:active { background: var(--s2); }
+.browse-t { font-size: 12.5px; color: var(--acc); }
+
+.chev {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--acc);
+  border-top: 1.5px solid var(--acc);
+  transform: rotate(45deg);
+}
 
 .changes-note {
   padding: 8px 0 4px;
