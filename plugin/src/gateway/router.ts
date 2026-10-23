@@ -285,13 +285,45 @@ export function createHandlers(): GatewayHandlers {
       const sessions = sessionsOf(rc.ctx)
       if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
       const sessionId = str(p, 'sessionId')
-      const text = str(p, 'text')
+      // 只发附件（"把这张图给它看"）是合法操作，所以文字允许为空；
+      // 但文字与附件都为空就没意义了。
+      const text = typeof p['text'] === 'string' ? p['text'] : ''
+      const hasAttach = Array.isArray(p['attachments']) && (p['attachments'] as unknown[]).length > 0
+      const hasImage = Array.isArray(p['images']) && (p['images'] as unknown[]).length > 0
+      if (text.trim().length === 0 && !hasAttach && !hasImage) {
+        throw new RpcError('rpc/bad-args', '消息内容不能为空')
+      }
 
       // requestId 必须由客户端提供并持久化（断线重发时用它去重）。
       // 客户端没给就现造一个——但那样重发可能重复执行，所以文档里要求 App 必须传。
       const requestId = typeof p['requestId'] === 'string' && p['requestId'].length > 0
         ? p['requestId']
         : randomUUID()
+
+      /*
+       * 内容块：文字 + 可选附件。
+       *   attachments: 上传后拿到的 receiptId（只能在本 Agent 作用域内用）
+       *   images:      直接内联的图片（base64），不需要走上传
+       * 顺序按"先文字后附件"——agent 读起来更自然。
+       */
+      const content: Record<string, unknown>[] = [{ type: 'text', text }]
+      if (Array.isArray(p['attachments'])) {
+        for (const r of p['attachments']) {
+          if (typeof r === 'string' && r.length > 0) content.push({ type: 'file', receiptId: r })
+        }
+      }
+      if (Array.isArray(p['images'])) {
+        for (const img of p['images']) {
+          const item = img as { mediaType?: unknown; data?: unknown }
+          if (typeof item?.data === 'string' && item.data.length > 0) {
+            content.push({
+              type: 'image',
+              mediaType: typeof item.mediaType === 'string' ? item.mediaType : 'image/png',
+              data: item.data,
+            })
+          }
+        }
+      }
 
       const controller = new AbortController()
       try {
@@ -300,9 +332,9 @@ export function createHandlers(): GatewayHandlers {
             requestId,
             sessionId,
             // steer：用户此刻就想影响正在跑的这一轮。
-            // queue 语义留给 session.queue.*（本轮未实现）。
+            // queue 语义留给 session.queue.*。
             mode: 'steer',
-            content: [{ type: 'text', text }],
+            content,
           },
           controller.signal,
         )
@@ -406,10 +438,16 @@ export function createHandlers(): GatewayHandlers {
       if (text.trim().length === 0) throw new RpcError('rpc/bad-args', '内容不能为空')
       // agent 运行中不会拒绝，而是排到 next-turn，每轮消费一条
       const requestId = typeof p['requestId'] === 'string' && p['requestId'].length > 0 ? p['requestId'] : randomUUID()
+      const content: Record<string, unknown>[] = [{ type: 'text', text }]
+      if (Array.isArray(p['attachments'])) {
+        for (const r of p['attachments']) {
+          if (typeof r === 'string' && r.length > 0) content.push({ type: 'file', receiptId: r })
+        }
+      }
       const controller = new AbortController()
       try {
         await sessions.prompt(
-          { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] },
+          { requestId, sessionId, mode: 'queue', content },
           controller.signal,
         )
         return { ok: true }
@@ -458,6 +496,59 @@ export function createHandlers(): GatewayHandlers {
         return { ok: true }
       } catch (error) {
         throw queueError(error)
+      }
+    },
+
+    // ── 附件上传 ──────────────────────────────────────────────────────────
+    //
+    // dsh 的上传是 `ctx.fileUploads.uploadStream({ sessionId, data, name })`：
+    // 它内部按 sessionId 解析 Agent，落到 Agent 的暂存区，返回
+    // `{ receiptId, file }`。receiptId 只在**同一个 Agent 作用域**内有效，
+    // 随后的 prompt 用 `{ type:'file', receiptId }` 引用它。
+    //
+    // 为什么不用 `@Remote('upload')`：那个签名要 Agent 实例（由 remote 框架
+    // 从 scope 注入），我们这边拿不到；uploadStream 是同一实现的稳定入口。
+    'fs.upload': async (rc, p) => {
+      const uploads = rc.ctx.get<FileUploadsService>('fileUploads', false)
+      if (uploads?.uploadStream === undefined) {
+        throw new RpcError('host/unavailable', '宿主不支持附件上传')
+      }
+      const sessionId = str(p, 'sessionId')
+      const name = typeof p['name'] === 'string' ? p['name'] : 'attachment'
+      const base64 = str(p, 'data')
+      if (base64.length === 0) throw new RpcError('rpc/bad-args', '文件内容为空')
+
+      // base64 → Uint8Array（分块解码：整串 atob 在大文件上会爆栈）
+      let bytes: Uint8Array
+      try {
+        bytes = decodeBase64(base64)
+      } catch {
+        throw new RpcError('rpc/bad-args', '文件内容不是合法的 base64')
+      }
+      if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+        throw new RpcError('rpc/bad-args', `单个附件不能超过 ${String(Math.round(MAX_UPLOAD_BYTES / 1024 / 1024))}MB`)
+      }
+
+      const controller = new AbortController()
+      try {
+        const value = (await uploads.uploadStream({
+          sessionId,
+          name,
+          signal: controller.signal,
+          // uploadStream 要 AsyncIterable<Uint8Array>
+          data: (async function* () { yield bytes })(),
+        })) as { receiptId?: unknown; file?: unknown } | undefined
+        const receiptId = typeof value?.receiptId === 'string' ? value.receiptId : ''
+        if (receiptId.length === 0) throw new RpcError('host/internal', '宿主没有返回上传凭证')
+        return {
+          receiptId,
+          name,
+          bytes: bytes.byteLength,
+          file: value?.file ?? null,
+        }
+      } catch (error) {
+        if (error instanceof RpcError) throw error
+        throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
       }
     },
 
@@ -617,7 +708,7 @@ export function createHandlers(): GatewayHandlers {
     'fs.list': notImplemented('fs.list'),
     'fs.stat': notImplemented('fs.stat'),
     'fs.read': notImplemented('fs.read'),
-    'fs.upload': notImplemented('fs.upload'),
+
 
     // ── M2 待实现：仓库与 git（全部只读，走 child_process 调 git）──────────
     'repo.list': notImplemented('repo.list'),
@@ -705,4 +796,39 @@ async function collectSessionEvents(rc: RouteContext, sessionId: string): Promis
     clearTimeout(timer)
     controller.abort()
   }
+}
+
+/** 仅供测试：把内部解码函数暴露出来（不参与运行时路径）。 */
+export const decodeBase64ForTest = decodeBase64
+
+/** dsh 的附件服务（只声明用到的那个入口）。 */
+interface FileUploadsService {
+  uploadStream(request: {
+    sessionId: string
+    data: AsyncIterable<Uint8Array>
+    signal?: AbortSignal
+    name?: string
+  }): Promise<unknown>
+}
+
+/** 单附件上限：手机端 8MB 已经够发图片与文档，再大传输体验会崩。 */
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+
+/**
+ * base64 → Uint8Array。
+ *
+ * 不用 `Uint8Array.from(atob(s), c => c.charCodeAt(0))`：那会在内存里
+ * 生成一个和内容等长的字符串数组，大文件直接把主线程卡住。
+ * 这里按 8KB 分块喂给 atob，峰值内存低一个数量级。
+ */
+function decodeBase64(input: string): Uint8Array {
+  const clean = input.includes(',') ? input.slice(input.indexOf(',') + 1) : input
+  const chunk = 8 * 1024
+  const out: number[] = []
+  for (let i = 0; i < clean.length; i += chunk) {
+    const slice = clean.slice(i, i + chunk)
+    const bin = atob(slice)
+    for (let j = 0; j < bin.length; j++) out.push(bin.charCodeAt(j))
+  }
+  return Uint8Array.from(out)
 }

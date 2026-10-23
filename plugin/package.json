@@ -58,7 +58,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node tests/manifest.test.mjs && node tests/lock.test.mjs && node tests/lock-password.test.mjs && node tests/devices.test.mjs && node tests/limits.test.mjs && node tests/adapters.test.mjs && node tests/changes.test.mjs && node tests/gateway.e2e.test.mjs",
+    "test": "npm run build && node tests/manifest.test.mjs && node tests/lock.test.mjs && node tests/lock-password.test.mjs && node tests/devices.test.mjs && node tests/limits.test.mjs && node tests/adapters.test.mjs && node tests/changes.test.mjs && node tests/upload.test.mjs && node tests/prompt-attach.test.mjs && node tests/gateway.e2e.test.mjs",
     "clean": "rm -rf lib"
   }
 }
