@@ -219,6 +219,9 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     },
   }
 
+  /** 网关运行状态（启动失败原因给设置页看）。 */
+  const gwState: { gatewayError?: string } = {}
+
   if (cfg.gateway.enabled) {
     try {
       const host = bindHost(cfg.gateway.bind)
@@ -242,6 +245,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
         allowedOrigins: cfg.gateway.allowedOrigins,
         allowedLocalAddresses: allowedLocal,
       }, ctx)
+      gwState.gatewayError = undefined
       // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
       ctx.on('dsh-link/lock-changed', (state) => {
         gateway?.broadcast('lock.changed', state as LockState)
@@ -250,11 +254,19 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
       // 端口占用、网卡取不到、权限不足——这些都是"远程访问不可用"，
       // 不是"锁屏不可用"。原来没有 try/catch，一个可选子系统的失败
       // 会把整个插件（包括与端口无关的锁屏）一起拖死。
+      const reason = error instanceof Error ? `${(error as { code?: string }).code ?? ''} ${error.message}`.trim() : String(error)
       ctx.logger?.error(
         '[dsh-link] 网关启动失败，远程访问已降级（锁屏不受影响）：%s',
-        error instanceof Error ? error.message : String(error),
+        reason,
       )
       gateway = undefined
+      /*
+       * 把失败原因也暴露到 HTTP 状态里。
+       *
+       * 只写日志等于用户看不到：卡面上"App 连不上"而设置页一切正常，
+       * 是最难自查的一种状态。设置页与 App 都读这个字段。
+       */
+      gwState.gatewayError = reason
     }
   }
 
@@ -264,7 +276,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     const off = webServer.register({
       kind: 'prefix',
       path: '/dsh-link',
-      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId, relay, recomputeEndpoints),
+      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId, relay, recomputeEndpoints, gwState),
     })
     ctx.effect(() => () => off(), 'dsh-link: http routes')
   }
@@ -313,6 +325,7 @@ function makeHttpHandler(
   hostId: string,
   relay: RelayState,
   recomputeEndpoints: () => string[],
+  gwState: { gatewayError?: string },
 ) {
   return async (rawReq: unknown, rawRes: unknown): Promise<void> => {
     const req = rawReq as IncomingMessage
