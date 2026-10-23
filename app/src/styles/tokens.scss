@@ -51,6 +51,45 @@
   --t-fast: 180ms;
   --t-mid: 260ms;
   --t-slow: 620ms;
+
+  /*
+   * ── 响应式 ──────────────────────────────────────────────────────
+   * 手机上内容铺满（390 宽屏每像素都珍贵）；
+   * 平板上限制阅读宽度并居中——一行文字超过 ~90 字符就很难扫读了。
+   * --gutter 是页面左右留白，随断点放大。
+   */
+  --content-max: none;
+  --gutter: 16px;
+  --card-pad: 14px;
+  --fs-body: 14px;
+  --fs-title: 15px;
+  --fs-meta: 11.5px;
+  --grid-devices: 1;
+  --grid-sessions: 1;
+}
+
+/* 平板竖屏：834 / 768 这一档 */
+@media (min-width: 700px) {
+  .dsh {
+    --content-max: 720px;
+    --gutter: 28px;
+    --card-pad: 18px;
+    --fs-body: 15px;
+    --fs-title: 16px;
+    --fs-meta: 12.5px;
+    /* 平板上两列卡片，一屏能看全，不用滚 */
+    --grid-devices: 2;
+    --grid-sessions: 2;
+  }
+}
+
+/* 平板横屏 / 大屏：更宽的内容区，仍限制阅读宽度 */
+@media (min-width: 1000px) {
+  .dsh {
+    --content-max: 860px;
+    --gutter: 40px;
+    --grid-sessions: 2;
+  }
 }
 
 /* ── 550W / 深色 ───────────────────────────────────────────────────── */

@@ -105,12 +105,30 @@ function relativeTime(ts: number): string {
   return `${Math.floor(hour / 24)} 天前`
 }
 
+/**
+ * 设备卡第三行：这台机器上发生了什么。
+ *
+ * 空的时候返回空串而不是 '—'：一个孤零零的破折号看起来像加载失败。
+ *
+ * 当前连接的那台设备用本地已知的会话数（刚拉过 session.list）；
+ * 其它设备宿主不会下发统计，就不写——比编一个数字诚实。
+ */
 function usageLine(d: DeviceCard): string {
   if (d.lock?.locked) return '已锁定 · 任务仍在后台继续'
+
+  const isActive = d.deviceId === state.activeId
+  const sessions = isActive ? state.sessions : []
+  const total = d.sessionCount ?? (isActive ? sessions.length : undefined)
+  const running = d.runningCount ?? (isActive ? sessions.filter((x) => x.status === 'running').length : undefined)
+  const waiting = isActive
+    ? sessions.filter((x) => x.status === 'waiting-approval' || x.status === 'waiting-input').length
+    : 0
+
   const parts: string[] = []
-  if (d.sessionCount !== undefined) parts.push(`${d.sessionCount} 个会话`)
-  if (d.runningCount !== undefined && d.runningCount > 0) parts.push(`${d.runningCount} 个运行中`)
-  return parts.length > 0 ? parts.join(' · ') : '—'
+  if (total !== undefined && total > 0) parts.push(`${String(total)} 个会话`)
+  if (running !== undefined && running > 0) parts.push(`${String(running)} 个运行中`)
+  if (waiting > 0) parts.push(`${String(waiting)} 个待处理`)
+  return parts.join(' · ')
 }
 
 function onBootDone(): void {
@@ -492,13 +510,14 @@ onLoad(() => {
         <text class="mono t3">{{ otherDevices.length }}</text>
       </view>
 
-      <view
-        v-for="d in otherDevices"
-        :key="d.deviceId"
-        class="row"
-        @tap="open(d)"
-        @longpress="deviceMenu(d)"
-      >
+      <view class="dev-grid">
+        <view
+          v-for="d in otherDevices"
+          :key="d.deviceId"
+          class="row"
+          @tap="open(d)"
+          @longpress="deviceMenu(d)"
+        >
         <MossTerm
           :title="d.name"
           :status="statusOf(d)"
@@ -510,8 +529,10 @@ onLoad(() => {
             <text class="mono t3">{{ metaLine(d) }}</text>
             <text v-if="d.conn === 'needs-auth'" class="chip">需密码</text>
           </view>
-          <view class="dev-use t2">{{ usageLine(d) }}</view>
-        </MossTerm>
+          <!-- usageLine 没内容时整行不渲染：一个孤零零的"—"看起来像加载失败 -->
+          <view v-if="usageLine(d).length > 0" class="dev-use t2">{{ usageLine(d) }}</view>
+          </MossTerm>
+        </view>
       </view>
 
       <!-- 空态：没有任何设备时，唯一的行动是配对。
@@ -812,9 +833,25 @@ onLoad(() => {
 }
 
 /* 底部安全距离由 moss.scss 的 .scroll 统一给，这里只管左右 */
-.scroll { padding-left: 12px; padding-right: 12px; }
+.scroll {
+  padding-left: var(--gutter, 12px);
+  padding-right: var(--gutter, 12px);
+}
 
-.row { margin-bottom: 10px; }
+/*
+ * 设备卡列表。
+ *
+ * 手机单列；平板两列（--grid-devices 由 tokens.scss 的断点给出）。
+ * 用 grid 而不是 flex-wrap：flex-wrap 下最后一行不满时卡片会被拉伸，
+ * 两列宽度不一致看起来像 bug。
+ */
+.dev-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-devices, 1), minmax(0, 1fr));
+  gap: 10px;
+}
+
+.row { margin-bottom: 0; }
 
 .dev-meta {
   display: flex;

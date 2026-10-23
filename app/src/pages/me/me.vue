@@ -180,7 +180,18 @@ function about(): void {
   border-top: 1px solid var(--bd);
 }
 
-.brand-img { width: 64px; height: 64px; flex: none; }
+/* 白金属机身在小尺寸下容易糊成一团，放大后细节才看得见；
+   同时给一个深色圆角底座，避免白色方块直接压在深色背景上 */
+.brand-img {
+  width: 76px;
+  height: 76px;
+  flex: none;
+  border-radius: 14px;
+  background: radial-gradient(circle at 40% 30%, var(--s3), var(--s1) 70%);
+  border: 1px solid var(--bd);
+  padding: 6px;
+  box-sizing: border-box;
+}
 .brand-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .brand-h { font-size: 15px; font-weight: 700; letter-spacing: 1.6px; color: var(--t1); }
 .brand-acc { color: var(--acc); }

@@ -318,7 +318,11 @@ function onSessionEvent(method: string, payload: unknown): void {
     const k = data['k']
     // history=true 的帧是回放，不需要每来一条就滚动
     const isHistory = data['history'] === true
-    if (k === 'assist') {
+    // 用户自己发的消息。历史回放会推 k='user'，之前没有这个分支，
+    // 于是回看历史时"我说的话"全部消失，只剩 agent 的回复。
+    if (k === 'user') {
+      items.value.push({ k: 'user', text: String(data['text'] ?? ''), at: nowLabel() })
+    } else if (k === 'assist') {
       items.value.push({ k: 'assist', text: String(data['text'] ?? ''), at: nowLabel() })
     } else if (k === 'activity') {
       /**
@@ -404,6 +408,10 @@ onLoad((q) => {
   setSessionListener(onSessionEvent)
   // 订阅时宿主会立刻回放历史，期间显示骨架屏
   loadingHistory.value = id !== ''
+
+  // 进页面就拉模型目录：否则模型栏永远显示"默认模型"，
+  // 用户不知道当前用的是哪个模型。
+  void loadCatalog()
 
   const link = currentLink()
   if (link !== undefined && id !== '') {
@@ -541,11 +549,18 @@ onUnmounted(() => {
 </template>
 
 <style lang="scss" scoped>
+/*
+ * 平板上三段（顶栏 / 消息流 / 输入区）都限宽居中。
+ * 只限消息流会出现"顶栏铺满、消息缩在中间"的割裂感。
+ */
 .top {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px 8px;
+  width: 100%;
+  max-width: var(--content-max, none);
+  margin: 0 auto;
+  padding: 0 var(--gutter, 12px) 8px;
   border-bottom: 1px solid var(--bd);
   background: linear-gradient(180deg, var(--bg) 60%, transparent);
 }
@@ -582,9 +597,20 @@ onUnmounted(() => {
 
 .tsub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 10.5px; color: var(--t3); }
 
-.flow { flex: 1; padding: 0 14px; height: 0; }
+.flow {
+  flex: 1;
+  height: 0;
+  width: 100%;
+  max-width: var(--content-max, none);
+  margin: 0 auto;
+  padding: 0 var(--gutter, 14px);
+  box-sizing: border-box;
+}
 
 .daystamp { text-align: center; font-size: 10px; color: var(--t3); margin: 14px 0; letter-spacing: 1px; }
+
+/* 正文用可读字号：手机上 14，平板上 15（见 tokens.scss --fs-body） */
+.ai-b, .me-b { font-size: var(--fs-body, 14px); line-height: 1.62; }
 
 /* 用户消息 */
 .me { display: flex; justify-content: flex-end; margin: 10px 0; }
@@ -702,7 +728,10 @@ onUnmounted(() => {
 .send.stop { color: var(--danger); border-color: var(--danger-bd); background: var(--danger-soft); }
 
 .composer {
-  padding: 8px 12px;
+  width: 100%;
+  max-width: var(--content-max, none);
+  margin: 0 auto;
+  padding: 8px var(--gutter, 12px);
   border-top: 1px solid var(--bd);
   background: linear-gradient(0deg, var(--bg) 72%, transparent);
 }

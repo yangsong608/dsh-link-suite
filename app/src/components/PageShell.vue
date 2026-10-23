@@ -21,10 +21,16 @@ const emit = defineEmits<{ (e: 'tab', tab: 'devices' | 'sessions' | 'me'): void 
 
 const rootClass = computed(() => ['dsh', skinClass.value, themeClass.value, liteClass.value])
 
+/**
+ * 图标一律用 CSS 画，不用内联 SVG。
+ *
+ * uni-app 的 App 端对内联 SVG 支持不稳定（这块踩过两次：对话页返回箭头
+ * 渲染成空白、扫码按钮图标消失）。底部导航是全局入口，缺图标最伤。
+ */
 const tabs = [
-  { key: 'devices', label: '设备', icon: 'M3 5h18v11H3z M8 20h8M12 16v4' },
-  { key: 'sessions', label: '会话', icon: 'M21 12a8 8 0 0 1-8 8H7l-4 3 1.2-4.2A8 8 0 1 1 21 12Z' },
-  { key: 'me', label: '我的', icon: 'M12 11a3.4 3.4 0 1 0 0-6.8A3.4 3.4 0 0 0 12 11Z M4.5 20a7.5 7.5 0 0 1 15 0' },
+  { key: 'devices', label: '设备' },
+  { key: 'sessions', label: '会话' },
+  { key: 'me', label: '我的' },
 ] as const
 
 function go(key: 'devices' | 'sessions' | 'me'): void {
@@ -37,7 +43,8 @@ function go(key: 'devices' | 'sessions' | 'me'): void {
 <template>
   <view :class="rootClass">
     <MossVeil />
-    <slot />
+    <!-- 平板上内容限宽居中：一行太长会读不出来 -->
+    <view class="page-wrap" :class="{ 'has-tab': !props.hideTab }"><slot /></view>
 
     <view v-if="!hideTab" class="tabbar safe-bottom">
       <view
@@ -47,10 +54,11 @@ function go(key: 'devices' | 'sessions' | 'me'): void {
         :class="{ on: props.active === t.key }"
         @tap="go(t.key)"
       >
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path :d="t.icon" />
-        </svg>
+        <view class="ic" :class="`ic-${t.key}`">
+          <view class="ic-part a" />
+          <view class="ic-part b" />
+          <view class="ic-part c" />
+        </view>
         <text class="lb">{{ t.label }}</text>
         <text v-if="t.key === 'sessions' && state.waiting > 0" class="badge mono">{{ state.waiting }}</text>
       </view>
@@ -59,6 +67,28 @@ function go(key: 'devices' | 'sessions' | 'me'): void {
 </template>
 
 <style lang="scss" scoped>
+/*
+ * 内容包裹层。
+ * 手机：占满宽度（--content-max: none）。
+ * 平板：限宽并居中，两侧留白随断点放大。
+ * 用 min-height 而不是 height：详情页内容可能比屏幕高。
+ */
+.page-wrap {
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  min-height: 100%;
+}
+
+/*
+ * 底部导航是 fixed 的，内容会滑到它下面。
+ * 不给底部留白的话，最后一段（"关于"）永远看不全——
+ * 这不是"要滚一下"，是滚到头也还是一半在导航下面。
+ * 46 = tab 高度，8 = 上下内边距，再加安全区。
+ */
+.page-wrap.has-tab {
+  padding-bottom: calc(46px + 12px + var(--safe-bottom-real, 0px));
+}
 /**
  * 底部导航。
  *
@@ -97,9 +127,76 @@ function go(key: 'devices' | 'sessions' | 'me'): void {
 
 .tab.on { color: var(--acc); }
 
+/* 选中态：颜色 + 顶部短线。只靠颜色在小屏上不够明确 */
+.tab.on::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 18px;
+  height: 2px;
+  margin-left: -9px;
+  border-radius: 0 0 2px 2px;
+  background: var(--acc);
+  box-shadow: 0 0 8px var(--acc-glow);
+}
+
 .tab .ic {
+  position: relative;
   width: 21px;
   height: 21px;
+}
+
+/* 设备：显示器轮廓（方框 + 底座） */
+.ic-devices .a {
+  position: absolute;
+  left: 1px; right: 1px; top: 2px; height: 13px;
+  border: 1.7px solid currentColor;
+  border-radius: 3px;
+}
+.ic-devices .b {
+  position: absolute;
+  left: 7px; right: 7px; top: 15px; height: 1.7px;
+  background: currentColor;
+}
+.ic-devices .c {
+  position: absolute;
+  left: 4px; right: 4px; top: 17.5px; height: 1.7px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+/* 会话：对话气泡（圆角框 + 左下小尾巴） */
+.ic-sessions .a {
+  position: absolute;
+  left: 1px; right: 1px; top: 2px; height: 13px;
+  border: 1.7px solid currentColor;
+  border-radius: 6px;
+}
+.ic-sessions .b {
+  position: absolute;
+  left: 5px; top: 14px;
+  width: 5px; height: 5px;
+  border-left: 1.7px solid currentColor;
+  border-bottom: 1.7px solid currentColor;
+  transform: skewX(-18deg) rotate(-24deg);
+  border-bottom-left-radius: 2px;
+}
+
+/* 我的：头 + 肩 */
+.ic-me .a {
+  position: absolute;
+  left: 7px; top: 1px;
+  width: 7px; height: 7px;
+  border: 1.7px solid currentColor;
+  border-radius: 50%;
+}
+.ic-me .b {
+  position: absolute;
+  left: 2.5px; right: 2.5px; top: 10px; height: 9px;
+  border: 1.7px solid currentColor;
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
 }
 
 .tab .lb {

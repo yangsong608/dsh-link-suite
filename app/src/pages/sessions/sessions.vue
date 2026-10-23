@@ -279,6 +279,7 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
               <text class="mono t3">{{ sec.items.length }}</text>
             </view>
 
+            <view class="sess-grid">
             <view
               v-for="r in sec.items"
               :key="r.id"
@@ -301,13 +302,16 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
                 />
                 <view class="srow-body">
                   <text class="st">{{ r.title }}</text>
-                  <text class="ex">{{ r.excerpt ?? statusLabel(r.status) }}</text>
+                  <!-- 摘要有就显示；没有就不占行——右侧已经有状态了，
+                       再写一遍"已完成"是重复信息，反而更难扫 -->
+                  <text v-if="r.excerpt" class="ex">{{ r.excerpt }}</text>
                 </view>
               </view>
               <view class="srow-r">
                 <text class="host mono">{{ statusLabel(r.status) }}</text>
                 <text class="tm mono">{{ timeOf(r.updatedAt) }}</text>
               </view>
+            </view>
             </view>
           </template>
         </template>
@@ -374,6 +378,12 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 
 .empty-t { display: block; font-size: 14px; color: var(--t1); }
 .empty-d { display: block; margin-top: 8px; font-size: 11.5px; line-height: 17px; }
+
+.sess-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-sessions, 1), minmax(0, 1fr));
+  gap: 8px;
+}
 
 .srow {
   display: flex;
