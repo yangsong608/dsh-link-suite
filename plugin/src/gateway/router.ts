@@ -596,12 +596,36 @@ export function createHandlers(): GatewayHandlers {
         }
       }
 
-      // 兜底：从事件里的文件工具记录拼（近似）
+      // 兜底一：从事件里的文件工具记录拼（近似）
       const files = buildChanges(events)
+      if (files.length > 0) {
+        return {
+          files,
+          approximate: true,
+          note: '来自会话事件里的文件工具记录；不含 shell 改动、二进制与 git 操作',
+        }
+      }
+
+      /*
+       * 兜底二：按修改时间推测。
+       *
+       * 前两条都失效时（事件不带 meta、宿主投影也没记录到本会话），
+       * 与其显示空列表让用户以为"什么都没产出"，不如按"最近改过的文件"
+       * 给出来 —— 并明确标注这是推测。
+       */
+      const guessed = await recentFiles(rc, sessionId)
+      if (guessed.length > 0) {
+        return {
+          files: guessed,
+          approximate: true,
+          note: '宿主没有记录本轮改动，按最近 30 分钟内修改过的文件推测',
+        }
+      }
+
       return {
-        files,
+        files: [],
         approximate: true,
-        note: '来自会话事件里的文件工具记录；不含 shell 改动、二进制与 git 操作',
+        note: '这一轮没有检测到文件改动',
       }
     },
 
@@ -1215,4 +1239,52 @@ async function readHostChanges(
     // 投影不可用（会话太旧 / 插件未启用）就退回事件拼装
     return undefined
   }
+}
+
+/**
+ * 按修改时间推测最近改动（兜底，明确标注 approximate）。
+ *
+ * 只扫工作区根下两层、跳过 node_modules/.git/dist 等噪音目录，
+ * 上限 50 条：这是个"别让我看到空列表"的近似，不是权威数据。
+ */
+async function recentFiles(
+  rc: RouteContext,
+  sessionId: string,
+): Promise<{ path: string; op: string; additions: number; deletions: number }[]> {
+  const registry = rc.ctx.get<WorkspaceRegistry>('workspaceRegistry', false)
+  const workspaces = registry?.list?.() ?? []
+  let root = ''
+  for (const ws of workspaces) {
+    const ids = Array.isArray(ws.sessionIds) ? ws.sessionIds.map(String) : []
+    if (ids.includes(sessionId)) { root = ws.path; break }
+  }
+  if (root.length === 0) root = workspaces[0]?.path ?? ''
+  if (root.length === 0) return []
+
+  const { readdir, stat } = await import('node:fs/promises')
+  const { join, relative } = await import('node:path')
+  const skip = new Set(['node_modules', '.git', 'dist', 'build', '.cache', 'coverage'])
+  const cutoff = Date.now() - 30 * 60 * 1000
+  const out: { path: string; op: string; additions: number; deletions: number }[] = []
+
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (out.length >= 50 || depth > 2) return
+    let entries
+    try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (out.length >= 50) return
+      if (e.name.startsWith('.') || skip.has(e.name)) continue
+      const full = join(dir, e.name)
+      if (e.isDirectory()) { await walk(full, depth + 1); continue }
+      try {
+        const st = await stat(full)
+        if (st.mtimeMs >= cutoff) {
+          out.push({ path: relative(root, full), op: 'mod', additions: 0, deletions: 0 })
+        }
+      } catch { /* 单个文件读不到就跳过 */ }
+    }
+  }
+
+  await walk(root, 0)
+  return out
 }
