@@ -106,6 +106,8 @@ export interface Gateway {
   deviceOf(connId: string): string | undefined
   /** 当前在线的设备 id 集合（有已认证连接即算在线）。 */
   onlineDeviceIds(): readonly string[]
+  /** 最近连接关闭原因（诊断）。 */
+  recentCloses(): readonly { code: number; reason: string; at: number }[]
   readonly connections: number
 }
 
@@ -211,6 +213,9 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       // 写失败说明连接已坏，close 事件会接手清理
     }
   }
+
+  /** 最近 10 次连接关闭原因（诊断用）。 */
+  const recentCloses: { code: number; reason: string; at: number }[] = []
 
   const broadcast = (method: string, payload: unknown): void => {
     for (const conn of conns.values()) {
@@ -345,7 +350,18 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       conn.alive = true
     })
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
+      /*
+       * 记录断开原因。
+       *
+       * 用户反馈"切换模型后设备页也离线了"——这是真断开，而我们现在
+       * 完全看不到是谁关的（客户端主动 / 宿主心跳超时 / 异常 1006）。
+       * 记下最后 N 条，通过 /config/gateway 暴露出去。
+       */
+      try {
+        recentCloses.push({ code, reason: String(reason ?? '').slice(0, 60), at: Date.now() })
+        if (recentCloses.length > 10) recentCloses.shift()
+      } catch { /* 诊断信息不能影响主流程 */ }
       if (conn.preAuthTimer) clearTimeout(conn.preAuthTimer)
       conns.delete(conn.id)
       admission.releaseConnection(ip)
@@ -441,6 +457,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       for (const conn of conns.values()) if (conn.authenticated) count += 1
       return count
     },
+    recentCloses() { return recentCloses },
     onlineDeviceIds() {
       const ids: string[] = []
       for (const conn of conns.values()) {
