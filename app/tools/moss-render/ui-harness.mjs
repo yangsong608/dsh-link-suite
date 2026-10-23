@@ -107,15 +107,10 @@ const MODELS = {
 
 /** 会话历史：一段真实的对话，包含用户消息、思考、工具、审批卡、产物。 */
 const HISTORY = [
-  { t: 'user/message', data: { text: '上传通道现在是整文件一次性传，大文件会超时。改成 8MB 分片，要支持断点续传。' } },
-  { t: 'assistant/message', data: { text: '先看一下现在的实现，确认上传入口在哪里。' } },
+  { t: 'user/message', data: { content: [{ type: 'text', text: '上传通道现在是整文件一次性传，大文件会超时。改成 8MB 分片，要支持断点续传。' }] } },
+  { t: 'assistant/message', data: { message: { content: [{ type: 'text', text: '## 改动点\n\n分片上传的关键是**偏移量**要持久化，否则断线后只能重头来。\n\n1. 按 8MB 切片，每片独立重试\n2. manifest 记录 `offset` 与 `etag`\n3. 续传时从最后一个成功分片开始\n\n```ts\nconst CHUNK = 8 * 1024 * 1024\nfor (let offset = 0; offset < file.size; offset += CHUNK) {\n  await transport.sendChunk(file.slice(offset, offset + CHUNK), offset)\n}\n```\n\n> 注意：分片太小会放大请求开销，8MB 是经验值。\n\n详见 [the spec](https://example.com/spec) 里的 *resumable* 一节。' }] } } },
   { t: 'tool/call', data: { name: 'Read', arguments: JSON.stringify({ file_path: 'app/src/core/upload.ts' }), callId: 'c1' } },
-  { t: 'tool/result', data: { message: { content: [{ type: 'text', text: 'export async function upload(file) {...}' }] } } },
-  { t: 'tool/call', data: { name: 'Grep', arguments: JSON.stringify({ pattern: 'CHUNK_BYTES' }), callId: 'c2' } },
-  { t: 'tool/result', data: { message: { content: [{ type: 'text', text: '3 matches' }] } } },
-  { t: 'assistant/message', data: { text: '入口找到了。现在改成按 8MB 分片，并在 manifest 里记分片偏移，断线后从最后一个成功分片续传。' } },
-  { t: 'tool/call', data: { name: 'Bash', arguments: JSON.stringify({ command: 'npm test -- upload' }), callId: 'c3' } },
-  { t: 'tool/result', data: { message: { content: [{ type: 'text', text: 'PASS 12 tests' }] } } },
+  { t: 'tool/result', data: { message: { content: [{ type: 'text', text: 'ok' }] } } },
   { t: 'approval/asked', data: { id: 'ap1', toolName: 'Write', reason: '写入 dist/ 下 3 个文件（+1.2 MB）' } },
 ]
 
@@ -136,8 +131,17 @@ function toTrace(ev, seq) {
   const d = ev.data ?? {}
   const base = { seq, at: Date.now() - (20 - seq) * 60_000 }
   switch (ev.t) {
-    case 'user/message': return { ...base, k: 'user', text: d.text }
-    case 'assistant/message': return { ...base, k: 'text', text: d.text }
+    case 'user/message': {
+      const blocks = Array.isArray(d.content) ? d.content : []
+      return { ...base, k: 'user', text: blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('\n\n') }
+    }
+    // 真实结构是 message.content[] 的 text 块（与 app 的适配器保持一致）；
+    // 早期夹具用 data.text，两边不一致会让"内容为空"看起来像渲染 bug
+    case 'assistant/message': {
+      const blocks = Array.isArray(d.message?.content) ? d.message.content : []
+      const text = blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('\n\n')
+      return { ...base, k: 'text', text }
+    }
     case 'tool/call': {
       let target
       try {
