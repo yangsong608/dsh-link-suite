@@ -61,6 +61,7 @@ export interface RouteContext {
         broadcast(method: string, payload: unknown): void
         /** 当前在线的设备 id。 */
         onlineDeviceIds(): readonly string[]
+        recentCloses?(): readonly { code: number; reason: string; at: number }[]
       }
     | undefined
   /** 会话事件订阅表（follow 打开后由 server 推帧）。M1 可缺省。 */
