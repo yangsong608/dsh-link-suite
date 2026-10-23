@@ -79,8 +79,9 @@ export const METHODS = [
   'session.queue.push',
   'session.queue.edit',
   'session.queue.remove',
-  'session.queue.reorder',
-  'session.queue.clear',
+  // dsh 的队列没有「重排」也没有「清空」：顺序就是数组下标，
+  // 清空只能逐条 remove。这里只声明真实存在的能力。
+  'session.queue.steer',
 
   // 会话产物（这一轮动了哪些文件）
   // 会话管理（改名 / 归档）。dsh 不提供物理删除会话，

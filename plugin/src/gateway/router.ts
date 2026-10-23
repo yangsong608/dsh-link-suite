@@ -17,6 +17,7 @@ import type { DshContext, SessionController, PluginManager, WorkspaceRegistry, W
 import type { LinkConfig } from '../config.js'
 import type { LockService } from '../lock/index.js'
 import type { DeviceRegistry } from './devices.js'
+import { buildChanges, latestDiffForPath } from '../adapters/changes.js'
 import { toSessionSummaries, type HostSessionSummary } from '../adapters/sessions.js'
 
 /** 软读会话服务；宿主没装会话能力时返回 undefined，由 handler 决定怎么降级。 */
@@ -366,12 +367,126 @@ export function createHandlers(): GatewayHandlers {
 
     // ── M2 待实现：消息发送队列 ───────────────────────────────────────────
     // 队列是宿主侧内存 + 落盘，不是 dsh 的能力——dsh 一次只接受一条 prompt。
-    'session.queue.list': notImplemented('session.queue.list'),
-    'session.queue.push': notImplemented('session.queue.push'),
-    'session.queue.edit': notImplemented('session.queue.edit'),
-    'session.queue.remove': notImplemented('session.queue.remove'),
-    'session.queue.reorder': notImplemented('session.queue.reorder'),
-    'session.queue.clear': notImplemented('session.queue.clear'),
+
+    // ── 消息队列（dsh 里就是 Agent 的 inbox）────────────────────────────
+    //
+    // dsh **没有**独立的队列服务：所谓发送队列是 agent 的两条持久投影
+    //   next-turn（按轮 FIFO）、next-step（下一个 step 边界）
+    // 读=session.projections 的 values.inbox；改=session.updateQueue；
+    // 入队=session.prompt(mode:'queue')。
+    // 刻意不发明 reorder / clear —— dsh 不支持，声明了也只会骗客户端。
+    'session.queue.list': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions?.projections === undefined) throw new RpcError('host/unavailable', '宿主不支持读取队列')
+      const sessionId = str(p, 'sessionId')
+      const projection = (await sessions.projections({ sessionId })) as {
+        values?: { inbox?: Record<string, readonly unknown[]> }
+      } | null
+      const inbox = projection?.values?.inbox ?? {}
+      const shape = (list: readonly unknown[] | undefined): { itemId: string; text: string }[] =>
+        (list ?? []).map((raw) => {
+          const item = raw as { id?: unknown; content?: readonly { type?: string; text?: string }[] }
+          const text = (item.content ?? [])
+            .filter((c) => c?.type === 'text' && typeof c.text === 'string')
+            .map((c) => String(c.text))
+            .join('\n')
+          return { itemId: String(item.id ?? ''), text }
+        })
+      return {
+        nextTurn: shape(inbox['next-turn']),
+        nextStep: shape(inbox['next-step']),
+      }
+    },
+
+    'session.queue.push': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+      const sessionId = str(p, 'sessionId')
+      const text = str(p, 'text')
+      if (text.trim().length === 0) throw new RpcError('rpc/bad-args', '内容不能为空')
+      // agent 运行中不会拒绝，而是排到 next-turn，每轮消费一条
+      const requestId = typeof p['requestId'] === 'string' && p['requestId'].length > 0 ? p['requestId'] : randomUUID()
+      const controller = new AbortController()
+      try {
+        await sessions.prompt(
+          { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] },
+          controller.signal,
+        )
+        return { ok: true }
+      } catch (error) {
+        throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
+      }
+    },
+
+    'session.queue.edit': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions?.updateQueue === undefined) throw new RpcError('host/unavailable', '宿主不支持修改队列')
+      const sessionId = str(p, 'sessionId')
+      const itemId = str(p, 'itemId')
+      const text = str(p, 'text')
+      if (text.trim().length === 0) throw new RpcError('rpc/bad-args', '内容不能为空')
+      try {
+        // edit 只接受非空纯文本块
+        await sessions.updateQueue({ sessionId, itemId, action: { kind: 'edit', content: [{ type: 'text', text }] } })
+        return { ok: true }
+      } catch (error) {
+        throw queueError(error)
+      }
+    },
+
+    'session.queue.remove': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions?.updateQueue === undefined) throw new RpcError('host/unavailable', '宿主不支持修改队列')
+      const sessionId = str(p, 'sessionId')
+      const itemId = str(p, 'itemId')
+      try {
+        await sessions.updateQueue({ sessionId, itemId, action: { kind: 'remove' } })
+        return { ok: true }
+      } catch (error) {
+        throw queueError(error)
+      }
+    },
+
+    'session.queue.steer': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions?.updateQueue === undefined) throw new RpcError('host/unavailable', '宿主不支持 steer')
+      const sessionId = str(p, 'sessionId')
+      const itemId = str(p, 'itemId')
+      try {
+        // 把排队项提到当前轮的下一步；要求 agent 正在跑
+        await sessions.updateQueue({ sessionId, itemId, action: { kind: 'steer' } })
+        return { ok: true }
+      } catch (error) {
+        throw queueError(error)
+      }
+    },
+
+    // ── 产物（本轮改了哪些文件）──────────────────────────────────────────
+    //
+    // dsh 的 changes/diff 是 **owner-only HTTP 路由**（/api/changes.summary|diff），
+    // 不是 @Remote，经网关的非 owner Peer 拿不到（403）。
+    // 所以这里从持久事件里重建：tool/result 的 meta.diffs 是 {path, oldText, newText}，
+    // 由 write / edit 工具写入。
+    //
+    // 诚实标注：只覆盖文件工具的写入/编辑，不含 shell 产生的变更、二进制文件、
+    // 纯 git 变更（提交/删除/重命名）。响应里带 approximate: true 与说明。
+    'session.changes': async (rc, p) => {
+      const events = await collectSessionEvents(rc, str(p, 'sessionId'))
+      const files = buildChanges(events)
+      return {
+        files,
+        approximate: true,
+        note: '来自会话事件里的文件工具记录；不含 shell 改动、二进制与 git 操作',
+      }
+    },
+
+    'session.diff': async (rc, p) => {
+      const events = await collectSessionEvents(rc, str(p, 'sessionId'))
+      const path = str(p, 'path')
+      const found = latestDiffForPath(events, path)
+      if (found === undefined) throw new RpcError('session/not-found', '这个文件没有可用的差异记录')
+      return found
+    },
 
     // ── 模型选择 ──────────────────────────────────────────────────────────
     'session.modelCatalog': async (rc) => {
@@ -498,10 +613,6 @@ export function createHandlers(): GatewayHandlers {
       return { ok: true, sessionId }
     },
 
-    // ── M2 待实现：会话产物 ───────────────────────────────────────────────
-    'session.changes': notImplemented('session.changes'),
-    'session.diff': notImplemented('session.diff'),
-
     // ── M2 待实现：文件浏览（只读；上传在 M1）──────────────────────────────
     'fs.list': notImplemented('fs.list'),
     'fs.stat': notImplemented('fs.stat'),
@@ -548,3 +659,50 @@ export function services(ctx: DshContext): {
 }
 
 export { METHOD_POLICY }
+
+/**
+ * 把队列操作的宿主错误翻译成客户端能懂的错误码。
+ *
+ * dsh 的原始错误是字符串（session/queue-item-not-found、session/steer-unavailable），
+ * 直接透传客户端只会显示一串英文代码。
+ */
+function queueError(error: unknown): RpcError {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/queue-item-not-found/i.test(message)) {
+    return new RpcError('session/not-found', '这条排队消息已经不在了（可能刚好被消费）')
+  }
+  if (/steer-unavailable/i.test(message)) {
+    return new RpcError('session/busy', '现在不能插话：agent 不在运行中，或这条不在待发队列里')
+  }
+  return new RpcError('host/internal', message)
+}
+
+/**
+ * 读一个会话的近期事件（用于重建产物）。
+ *
+ * 复用 sessionController.follow：它的首帧就是 snapshot（含 records），
+ * 拿到就断开——不要在这里留一个长订阅。
+ */
+async function collectSessionEvents(rc: RouteContext, sessionId: string): Promise<readonly unknown[]> {
+  const sessions = sessionsOf(rc.ctx)
+  if (sessions?.follow === undefined) throw new RpcError('host/unavailable', '宿主不支持读取会话事件')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+  timer.unref?.()
+  try {
+    for await (const frame of sessions.follow(
+      { address: { kind: 'session', sessionId }, maxMessages: 200 },
+      controller.signal,
+    )) {
+      const f = frame as { type?: string; records?: readonly unknown[] }
+      if (f.type !== 'snapshot') break
+      return f.records ?? []
+    }
+    return []
+  } catch (error) {
+    throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
+  } finally {
+    clearTimeout(timer)
+    controller.abort()
+  }
+}

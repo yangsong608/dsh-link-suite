@@ -49,6 +49,25 @@ interface WorkspaceGroup {
 
 const collapsedIds = ref<Set<string>>(new Set())
 
+/**
+ * 搜索。
+ *
+ * 过滤发生在**分组之前**：按标题与工作区名做不区分大小写的子串匹配，
+ * 命中的会话再走原来的"按工作区分组 + 组内按紧迫度"逻辑。
+ * 这样搜索结果仍然保留上下文（哪个项目的），比平铺列表好找。
+ *
+ * 搜索时不折叠：折叠状态会让命中项藏在收起的组里，
+ * 用户会以为"搜不到"。
+ */
+const searching = ref(false)
+const keyword = ref('')
+
+function toggleSearch(): void {
+  haptic('light')
+  searching.value = !searching.value
+  if (!searching.value) keyword.value = ''
+}
+
 function loadCollapsed(): void {
   try {
     const raw = uni.getStorageSync('dsh-link/collapsed')
@@ -81,7 +100,19 @@ function sectionOf(items: SessionRow[]): GroupedSection[] {
 }
 
 const groups = computed<WorkspaceGroup[]>(() => {
-  const byId = new Map(state.sessions.map((s) => [s.id, s]))
+  const kw = keyword.value.trim().toLowerCase()
+  const match = (title: string | undefined): boolean =>
+    kw.length === 0 || String(title ?? '').toLowerCase().includes(kw)
+
+  const wsNameOf = (workspaceId: string): string =>
+    state.workspaces.find((w) => w.id === workspaceId)?.name ?? ''
+
+  const byId = new Map(
+    state.sessions
+      // 命中标题，或命中它所属工作区的名字（"ajl 项目里那个会话"也是常见问法）
+      .filter((s) => match(s.title) || match(wsNameOf(s.workspaceId)))
+      .map((s) => [s.id, s]),
+  )
   const claimed = new Set<string>()
   const out: WorkspaceGroup[] = []
 
@@ -101,7 +132,8 @@ const groups = computed<WorkspaceGroup[]>(() => {
       sections,
       total: items.length,
       hasWaiting: sections.some((x) => x.key === 'waiting'),
-      collapsed: collapsedIds.value.has(ws.id),
+      // 搜索时强制展开：命中项藏在折叠组里等于搜不到
+      collapsed: kw.length === 0 && collapsedIds.value.has(ws.id),
     })
   }
 
@@ -115,7 +147,7 @@ const groups = computed<WorkspaceGroup[]>(() => {
       sections,
       total: orphans.length,
       hasWaiting: sections.some((x) => x.key === 'waiting'),
-      collapsed: collapsedIds.value.has('__orphans__'),
+      collapsed: kw.length === 0 && collapsedIds.value.has('__orphans__'),
     })
   }
 
@@ -253,10 +285,27 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
     <view class="head safe-top">
       <text class="h1">会话</text>
       <view class="head-r">
-        <text class="mono t3">{{ state.devices.length }} 台机器</text>
+        <text v-if="!searching" class="mono t3">{{ state.devices.length }} 台机器</text>
+        <view class="search-btn" @tap="toggleSearch">
+          <view class="ico-search" :class="{ on: searching }" />
+        </view>
         <!-- 角标放在标题右侧：一眼知道"有没有东西在跑"，不用逐条看状态 -->
         <MossBadge :size="24" :working="anyRunning" :glow="!state.lite" />
       </view>
+    </view>
+
+    <!-- 搜索框：只在点了放大镜后出现，平时不占高度 -->
+    <view v-if="searching" class="search-row">
+      <input
+        v-model="keyword"
+        class="search-in"
+        type="text"
+        placeholder="搜索会话标题或工作区"
+        placeholder-class="ph"
+        :focus="searching"
+        confirm-type="search"
+      />
+      <text v-if="keyword.length > 0" class="search-clear" @tap="keyword = ''">清除</text>
     </view>
 
     <view class="scroll">
@@ -318,7 +367,11 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
       </template>
 
       <!-- 真的没有任何会话时给空态，而不是一片空白 -->
-      <view v-if="groups.length === 0" class="empty">
+      <view v-if="groups.length === 0 && keyword.length > 0" class="empty">
+        <text class="empty-t">没有匹配「{{ keyword }}」的会话</text>
+        <text class="empty-d t3">试试更短的关键词，或清空搜索。</text>
+      </view>
+      <view v-else-if="groups.length === 0" class="empty">
         <text class="empty-t">这台电脑还没有会话</text>
         <text class="empty-d t3">在电脑上打开 DSH 开始一个对话，它会出现在这里。</text>
       </view>
@@ -350,6 +403,60 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 
 /* 底部安全距离由 moss.scss 的 .scroll 统一给，这里只管左右 */
 .scroll { padding-left: 12px; padding-right: 12px; }
+
+.search-btn {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  flex: none;
+}
+
+.search-btn:active { background: var(--s2); }
+
+/* 放大镜：圆 + 柄，纯 CSS */
+.ico-search {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  border: 1.8px solid var(--t2);
+  border-radius: 50%;
+}
+.ico-search.on { border-color: var(--acc); }
+.ico-search.on::after { background: var(--acc); }
+
+.ico-search::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 6px;
+  height: 1.8px;
+  background: var(--t2);
+  transform: rotate(45deg);
+  border-radius: 1px;
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 var(--gutter, 16px) 8px;
+}
+
+.search-in {
+  flex: 1;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd);
+  background: var(--s1);
+  color: var(--t1);
+  font-size: 13.5px;
+}
+
+.search-clear { font-size: 12.5px; color: var(--acc); flex: none; }
 
 .ws-head {
   display: flex;
