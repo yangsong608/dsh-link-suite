@@ -22,7 +22,6 @@ import { bindHost, normalizeConfig, type LinkConfig } from './config.js'
 import type { DshContext, WebServerService } from './dsh.js'
 import { LockService } from './lock/index.js'
 import { DeviceRegistry } from './gateway/devices.js'
-import { renderSetupPage, SETUP_PATH } from './setup-page.js'
 import { encodeQr, encodePairUri, pairPayloadFromEndpoint } from '@dsh-link/protocol'
 import { createApprovalBridge, createSubscriptionHub, type Deps } from './adapters/live.js'
 import { createHandlers, type RouteContext } from './gateway/router.js'
@@ -323,17 +322,17 @@ function makeHttpHandler(
     }
 
     try {
-      // 设置页：把"只有接口、没有入口"的能力补上一个可点的界面。
-      if (url.pathname === SETUP_PATH && req.method === 'GET') {
+      // 设置页已移除：配置统一放在 dsh 设置 → MOSS Link 面板里。
+      // 旧书签访问到 /dsh-link/setup 时给一句明确指引，而不是 404。
+      if (url.pathname === '/dsh-link/setup' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        res.end(renderSetupPage(hostId, relay.endpoints, gateway?.port ?? cfg.gateway.port))
-        return
-      }
-
-      // 用户从根路径进来时给一个跳转，省得记地址
-      if ((url.pathname === '/dsh-link' || url.pathname === '/dsh-link/') && req.method === 'GET') {
-        res.writeHead(302, { location: SETUP_PATH })
-        res.end()
+        res.end(
+          '<!doctype html><meta charset="utf-8">' +
+          '<body style="font:14px/1.6 -apple-system,sans-serif;padding:40px;max-width:520px">' +
+          '<h2>配置已移到 DSH 设置里</h2>' +
+          '<p>打开 DSH → 设置 → 侧栏「MOSS Link」，所有配置（锁屏密码、配对、公网接入、设备管理）都在那里。</p>' +
+          '</body>',
+        )
         return
       }
 
