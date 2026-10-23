@@ -614,6 +614,8 @@ window.__ModuleLoader__.load({
           setPassword: function (next, current) { return call('/lock/password', { next: next, current: current }) },
           clearPassword: function (current) { return call('/lock/password', { current: current }, 'DELETE') },
           lockNow: function () { return call('/lock', { action: 'lock' }) },
+          getRelay: function () { return call('/config/relay') },
+          setRelay: function (relayUrl) { return call('/config/relay', { relayUrl: relayUrl }) },
           startPair: function () { return call('/pair/start', {}) },
           devices: function () { return call('/pair/devices') },
           revoke: function (deviceId) { return call('/pair/revoke', { deviceId }) }
@@ -687,6 +689,9 @@ window.__ModuleLoader__.load({
       var pairState = pair[0], setPair = pair[1]
       var dev = React.useState({ list: [], msg: '', kind: '' })
       var devState = dev[0], setDev = dev[1]
+      // 公网接入（nps / frp）：地址与当前生效状态
+      var relay = React.useState({ url: '', current: '', endpoints: [], msg: '', kind: '' })
+      var relayState = relay[0], setRelay = relay[1]
 
       var loadStatus = React.useCallback(function () {
         api.status().then(function (out) {
@@ -700,9 +705,22 @@ window.__ModuleLoader__.load({
         })
       }, [api])
 
+      var loadRelay = React.useCallback(function () {
+        api.getRelay().then(function (out) {
+          if (out.status !== 200) return
+          setRelay(function (r) {
+            return Object.assign({}, r, {
+              current: out.body.relayUrl || '',
+              endpoints: out.body.endpoints || [],
+            })
+          })
+        })
+      }, [api])
+
       React.useEffect(function () {
         loadStatus()
         loadDevices()
+        loadRelay()
         // 只在挂载时读一次：设置面板的信息不需要实时刷新，
         // 每秒轮询会让它在后台一直发请求。
       }, [loadStatus, loadDevices])
@@ -741,6 +759,29 @@ window.__ModuleLoader__.load({
             loadStatus()
           } else {
             setPw(function (p) { return Object.assign({}, p, { msg: (out.body && out.body.error) || '清除失败', kind: 'err' }) })
+          }
+        })
+      }
+
+      function saveRelay() {
+        var value = relayState.url.trim()
+        if (value.length > 0 && !/^wss?:\/\//.test(value)) {
+          setRelay(function (r) { return Object.assign({}, r, { msg: '必须填 ws:// 或 wss:// 开头的地址', kind: 'err' }) })
+          return
+        }
+        api.setRelay(value).then(function (out) {
+          if (out.status === 200) {
+            setRelay(function (r) {
+              return Object.assign({}, r, {
+                url: '',
+                current: out.body.relayUrl || '',
+                endpoints: out.body.endpoints || [],
+                msg: value.length === 0 ? '已清除，只用局域网' : '已保存，下次生成配对码即生效',
+                kind: 'ok',
+              })
+            })
+          } else {
+            setRelay(function (r) { return Object.assign({}, r, { msg: (out.body && out.body.error) || '保存失败', kind: 'err' }) })
           }
         })
       }
@@ -846,6 +887,42 @@ window.__ModuleLoader__.load({
           ),
           pwState.msg
             ? e('div', { className: '__dl_status ' + (pwState.kind === 'ok' ? '__dl_ok' : '__dl_err') }, pwState.msg)
+            : null
+        ),
+
+        // ── 公网接入（nps / frp）──
+        // 这一块之前只做在独立设置页里，而用户打开的是 dsh 设置面板——
+        // 同一个功能两个入口只做一个，等于没做。
+        e('div', { className: '__dl_group' },
+          e('div', { className: '__dl_title' }, '公网接入（nps / frp）'),
+          e('div', { className: '__dl_hint' },
+            '不在同一局域网时，用 nps / frp 把 7443 映射到公网。填公网可达地址后，配对二维码优先用它。'),
+          relayState.current
+            ? e('div', { className: '__dl_note' }, '当前生效：' + relayState.current)
+            : e('div', { className: '__dl_hint' },
+                '当前只用局域网地址（' + String(relayState.endpoints.length) + ' 个）'),
+          e('label', { className: '__dl_label', style: { marginTop: 10 } },
+            e('span', { className: '__dl_hint' }, '中继地址'),
+            e('input', {
+              className: '__dl_input',
+              type: 'text',
+              placeholder: 'wss://your-domain.example/dshlink',
+              value: relayState.url,
+              onChange: function (ev) { setRelay(function (r) { return Object.assign({}, r, { url: ev.target.value }) }) },
+            })
+          ),
+          e('div', { className: '__dl_btns', style: { marginTop: 10 } },
+            e('button', { type: 'button', className: '__dl_btn __dl_btnPri', onClick: saveRelay }, '保存'),
+            e('button', { type: 'button', className: '__dl_btn', onClick: function () {
+              setRelay(function (r) { return Object.assign({}, r, { url: '' }) })
+              api.setRelay('').then(function () { loadRelay() })
+            } }, '清除')
+          ),
+          e('div', { className: '__dl_note', style: { marginTop: 10 } },
+            '注意：nps 的 TCP 隧道是裸转发、不加 TLS，而本插件网关是明文 WebSocket。' +
+            '没有域名时请只用局域网；有域名走「域名转发」才会是密文。'),
+          relayState.msg
+            ? e('div', { className: '__dl_status ' + (relayState.kind === 'ok' ? '__dl_ok' : '__dl_err') }, relayState.msg)
             : null
         ),
 
