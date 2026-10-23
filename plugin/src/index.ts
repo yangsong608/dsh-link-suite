@@ -291,6 +291,8 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     const current = gateway
     gateway = undefined
     try { await current?.close() } catch { /* 已经关了 */ }
+    // 主动关闭不是失败，别把上一次的启动错误留在界面上
+    gwState.gatewayError = undefined
   }
 
   if (gwEnabled) {
@@ -301,24 +303,34 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
       gateway?.broadcast('lock.changed', state as LockState)
     })
 
-    /*
-     * 自愈循环。
-     *
-     * 首次启动可能因为端口竞争、网卡还没就绪而失败。原来失败了就降级到
-     * 下次重启——用户侧表现是"App 连不上，但设置页一切正常"，且无解。
-     *
-     * 现在每 15 秒检查一次：网关不在就重新拉起。代价是一次定时器；
-     * 收益是即使启动时机不巧，也能在十几秒内自己恢复。
-     */
-    const HEAL_INTERVAL_MS = 15_000
-    const healTimer = setInterval(() => {
-      if (gateway !== undefined) return
-      void startGatewayOnce()
-    }, HEAL_INTERVAL_MS)
-    // 定时器不能阻止进程退出
-    ;(healTimer as unknown as { unref?: () => void }).unref?.()
-    ctx.effect(() => () => clearInterval(healTimer), 'dsh-link: gateway self-heal')
   }
+
+  /*
+   * 自愈循环。
+   *
+   * 放在 if (gwEnabled) 之外：用户在设置里从「关」切成「开」之后，
+   * 如果这里没建定时器，后续启动失败就再也没人管了。
+   * 循环自己判断开关，关着就什么都不做。
+   */
+  const HEAL_INTERVAL_MS = 15_000
+  const healTimer = setInterval(() => {
+    /*
+     * 开关关掉时**绝不**自愈。
+   *
+   * 这里原来只看 gateway === undefined 就重启，于是：用户在设置里
+   * 关掉网关 → stopGateway() 把实例关掉 → 15 秒后自愈循环又把它拉起来。
+   * 表现就是"我明明关了，7443 还在监听"，而且关不干净。
+   *
+     * 自愈只应修"该开却没开"（启动时端口竞争、网卡未就绪），
+     * 不能覆盖用户的显式选择。
+     */
+    if (!gwEnabled) return
+    if (gateway !== undefined) return
+    void startGatewayOnce()
+  }, HEAL_INTERVAL_MS)
+  // 定时器不能阻止进程退出
+  ;(healTimer as unknown as { unref?: () => void }).unref?.()
+  ctx.effect(() => () => clearInterval(healTimer), 'dsh-link: gateway self-heal')
 
   /*
    * 网关控制面：HTTP 处理器在另一个函数里，拿不到 apply 的局部变量，
