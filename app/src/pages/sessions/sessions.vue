@@ -546,5 +546,12 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 .tm { font-size: 10px; color: var(--t3); }
 .srow.waiting .tm { color: var(--warn); }
 
-.foot { margin: 24px 4px; text-align: center; font-size: 10.5px; opacity: 0.7; }
+/*
+ * 底部说明要留出 tabbar 的高度。
+ *
+ * 只给容器加 padding-bottom 没用——padding 在 footer 之后，
+ * 容器变高了但 footer 的位置没动，仍然被 tabbar 的渐变盖住半行。
+ * 必须让 footer 自己有下外边距，把它顶到渐变带上方。
+ */
+.foot { margin: 24px 4px 64px; text-align: center; font-size: 10.5px; opacity: 0.7; }
 </style>
