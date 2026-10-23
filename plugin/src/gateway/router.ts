@@ -10,6 +10,8 @@
 
 import { randomUUID } from 'node:crypto'
 
+import { encodePairUri, encodeQr, pairPayloadFromEndpoint } from '@dsh-link/protocol'
+
 import { RpcError, DEFAULT_CAPS, METHOD_POLICY, type DeviceRole, type Method } from '@dsh-link/protocol'
 import type { DshContext, SessionController, PluginManager, WorkspaceRegistry } from '../dsh.js'
 import type { LinkConfig } from '../config.js'
@@ -41,6 +43,8 @@ export interface RouteContext {
   readonly devices: DeviceRegistry
   readonly hostId: string
   readonly dshVersion: string
+  /** 手机可用的连接地址（中继优先，其次各网卡）。配对时下发给客户端。 */
+  readonly endpoints: readonly string[]
   /**
    * 网关自身的引用。只在 plugin apply() 里晚绑定一次：
    * gateway 需要 handlers，handlers 又需要 gateway（pair.finish 要升格连接），
@@ -138,13 +142,29 @@ export function createHandlers(): GatewayHandlers {
       // 否则任何能连上端口的人都能给自己发一个码并配对成功。
       const session = rc.devices.startPair(rc.cfg.gateway.pairTtlMs, false)
       rc.ctx.logger?.info('[dsh-link] 待配对：%s（%ds 内有效）', session.code, Math.round(rc.cfg.gateway.pairTtlMs / 1000))
+      // 连地址一起给：App 自己不知道宿主监听在哪（尤其有多网卡或走中继时）。
+      // 只回一个码等于让用户自己去查 IP 手抄——那是把宿主能做的工作推给用户。
+      const fingerprint = rc.hostId.slice(-6)
+      const candidates = rc.endpoints
+        .map((wsUrl) => {
+          const payload = pairPayloadFromEndpoint(wsUrl, session.code, fingerprint)
+          if (payload === undefined) return undefined
+          const uri = encodePairUri(payload)
+          return { wsUrl, uri, qr: encodeQr(uri) }
+        })
+        .filter((c): c is NonNullable<typeof c> => c !== undefined)
+
       return {
         code: session.code,
         expiresAt: session.expiresAt,
         hostId: rc.hostId,
         // 指纹给用户比对"这台机器确实是它"，不做信任决策
-        fingerprint: rc.hostId.slice(-6),
-        // 码本身必须由人在 PC 上确认，这里明确告诉客户端下一步
+        fingerprint,
+        // 首选地址与二维码。多网卡时手机连不上就换 candidates 里的下一个。
+        wsUrl: candidates[0]?.wsUrl,
+        candidates: candidates.map((c) => ({ wsUrl: c.wsUrl, uri: c.uri })),
+        qr: candidates[0]?.qr,
+        // 手机自助发起的配对必须等 PC 确认
         next: 'ask-owner',
       }
     },

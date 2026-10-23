@@ -23,6 +23,7 @@ import type { DshContext, WebServerService } from './dsh.js'
 import { LockService } from './lock/index.js'
 import { DeviceRegistry } from './gateway/devices.js'
 import { renderSetupPage, SETUP_PATH } from './setup-page.js'
+import { encodeQr, encodePairUri, pairPayloadFromEndpoint } from '@dsh-link/protocol'
 import { createApprovalBridge, createSubscriptionHub, type Deps } from './adapters/live.js'
 import { createHandlers, type RouteContext } from './gateway/router.js'
 import { startGateway, type Gateway } from './gateway/server.js'
@@ -100,8 +101,20 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
   const devices = new DeviceRegistry(join(LINK_DIR, 'devices.json'))
   await devices.load()
 
-  // 手机要连的地址由宿主算出来（用户不该自己去查 ifconfig）。
-  const endpoints = lanAddresses().map((ip) => `ws://${ip}:${cfg.gateway.port}/dshlink`)
+  /**
+   * 手机要连的地址，由宿主算出来（用户不该自己去查 ifconfig）。
+   *
+   * 顺序即优先级：
+   *   1. relayUrl（配了就是公网可达的中继/nps 地址，最通用）
+   *   2. 各网卡的局域网地址（同 WiFi 下最快，不依赖外网）
+   *
+   * 为什么中继排第一：局域网地址只在同一网段有效，而中继在任何网络下都通。
+   * 用户扫码时期望"一次成功"，所以默认给最可能成功的那个。
+   */
+  const lanEndpoints = lanAddresses().map((ip) => `ws://${ip}:${cfg.gateway.port}/dshlink`)
+  const endpoints = cfg.gateway.relayUrl === undefined
+    ? lanEndpoints
+    : [cfg.gateway.relayUrl, ...lanEndpoints]
 
   // ── 订阅与审批 ──────────────────────────────────────────────────────────
   // 两者都依赖网关（推帧 / 广播），所以用晚绑定：先建对象，网关起来后它们读到的
@@ -132,6 +145,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     devices,
     hostId,
     dshVersion,
+    endpoints,
     // 晚绑定：网关需要 handlers，handlers 又需要网关（pair.finish 要升格连接）。
     gateway: () => gateway,
     subscriptions: {
@@ -368,10 +382,32 @@ function makeHttpHandler(
           json(503, { error: '设备表未就绪' })
           return
         }
+
+        // 关键：把"手机该连哪个地址"一并算出来。
+        // 原来只回一个码，用户得自己去设置页翻 IP 手抄——那是把
+        // 宿主能做的事推给了用户。现在每个网卡一个候选，外加二维码。
+        const fingerprint = hostId.slice(-6)
+        const candidates = endpoints.map((wsUrl) => {
+          const payload = pairPayloadFromEndpoint(wsUrl, session.code, fingerprint)
+          if (payload === undefined) return undefined
+          const uri = encodePairUri(payload)
+          return {
+            wsUrl,
+            uri,
+            // 二维码矩阵直接给出去：前端不用引任何 QR 库，照着画格子就行
+            qr: encodeQr(uri),
+          }
+        }).filter((c): c is NonNullable<typeof c> => c !== undefined)
+
         json(200, {
           code: session.code,
           expiresAt: session.expiresAt,
           hostId,
+          fingerprint,
+          // 首选地址（第一个网卡）。多网卡时手机若连不上，换下一个。
+          wsUrl: candidates[0]?.wsUrl,
+          candidates: candidates.map((c) => ({ wsUrl: c.wsUrl, uri: c.uri })),
+          qr: candidates[0]?.qr,
         })
         return
       }
