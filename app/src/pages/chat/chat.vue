@@ -37,6 +37,49 @@ const wide = ref(false)
 const rightOpen = ref(true)
 
 /**
+ * 两栏宽度（可拖拽）。
+ *
+ * 平板横屏下左栏 240 / 右栏 300 只是一个起点：会话标题长短、产物路径长短
+ * 差别很大，固定值必然有一边不好用。用拖拽让用户自己定，但夹在合理区间内，
+ * 避免拖到 0 或占满整屏把中间区域挤没。
+ */
+const leftW = ref(240)
+const rightW = ref(300)
+const LEFT_RANGE = [180, 420] as const
+const RIGHT_RANGE = [220, 520] as const
+
+let drag: { side: 'left' | 'right'; startX: number; startW: number } | undefined
+
+type DragEvent = { touches?: ArrayLike<{ clientX: number }>; clientX?: number }
+
+function startDrag(side: 'left' | 'right', ev: DragEvent): void {
+  const x = ev.touches?.[0]?.clientX ?? ev.clientX ?? 0
+  drag = { side, startX: x, startW: side === 'left' ? leftW.value : rightW.value }
+  haptic('light')
+}
+
+function onDrag(ev: DragEvent): void {
+  if (drag === undefined) return
+  const x = ev.touches?.[0]?.clientX ?? ev.clientX ?? 0
+  const delta = x - drag.startX
+  if (drag.side === 'left') {
+    leftW.value = clamp(drag.startW + delta, LEFT_RANGE[0], LEFT_RANGE[1])
+  } else {
+    // 右栏在右边：向右拖 = 变窄
+    rightW.value = clamp(drag.startW - delta, RIGHT_RANGE[0], RIGHT_RANGE[1])
+  }
+}
+
+function endDrag(): void {
+  if (drag !== undefined) haptic('light')
+  drag = undefined
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v))
+}
+
+/**
  * 左栏按工作区分组。
  *
  * 之前是平铺列表，和会话页的分组逻辑不一致——同一个应用里两处对同一个
@@ -874,11 +917,25 @@ onUnmounted(() => {
     <view class="grain" />
 
     <!-- 宽屏三栏：左＝会话列表，中＝当前对话，右＝产物 -->
-    <view v-if="wide" class="rail-left">
+    <view
+      v-if="wide"
+      class="rail-left"
+      :style="{ width: leftW + 'px' }"
+    >
       <view class="rail-head">
         <text class="rail-title">会话</text>
         <text class="mono t3">{{ state.sessions.length }}</text>
       </view>
+      <!-- 拖拽把手：宽 14px 的热区，压在边框上（视觉只有 1px 线） -->
+      <view
+        class="rail-grip grip-right"
+        @touchstart="startDrag('left', $event)"
+        @touchmove="onDrag($event)"
+        @touchend="endDrag"
+        @mousedown="startDrag('left', $event)"
+        @mousemove="onDrag($event)"
+        @mouseup="endDrag"
+      />
       <scroll-view class="rail-scroll" scroll-y>
         <template v-for="g in railGroups" :key="g.id">
           <view class="rail-group">{{ g.name }}</view>
@@ -1095,7 +1152,12 @@ onUnmounted(() => {
     </view>
 
     <!-- 宽屏右栏：产物常驻，可收起 -->
-    <view v-if="wide" class="rail-right" :class="{ closed: !rightOpen }">
+    <view
+      v-if="wide"
+      class="rail-right"
+      :class="{ closed: !rightOpen }"
+      :style="{ width: rightOpen ? rightW + 'px' : '40px' }"
+    >
       <view class="rail-head">
         <view class="rail-head-l">
           <text class="rail-title">产物</text>
@@ -1105,6 +1167,16 @@ onUnmounted(() => {
           <view class="chev-r" :class="{ open: rightOpen }" />
         </view>
       </view>
+      <view
+        v-if="rightOpen"
+        class="rail-grip grip-left"
+        @touchstart="startDrag('right', $event)"
+        @touchmove="onDrag($event)"
+        @touchend="endDrag"
+        @mousedown="startDrag('right', $event)"
+        @mousemove="onDrag($event)"
+        @mouseup="endDrag"
+      />
       <view v-if="!rightOpen" class="rail-collapsed" @tap="rightOpen = true">产物</view>
       <scroll-view v-if="rightOpen" class="rail-scroll" scroll-y>
         <view v-if="fileItems.length === 0" class="rail-empty t3">这一轮还没有产物</view>
@@ -1242,8 +1314,23 @@ onUnmounted(() => {
   background: var(--s1);
 }
 
-.rail-left { width: 240px; border-right: 1px solid var(--bd); }
-.rail-right { width: 300px; border-left: 1px solid var(--bd); transition: width var(--t-mid) var(--ease-out); }
+.rail-left { position: relative; border-right: 1px solid var(--bd); }
+.rail-right { position: relative; border-left: 1px solid var(--bd); }
+
+/* 拖拽热区：两侧各压住边缘，够宽好按，但视觉上只有那条 1px 边 */
+.rail-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  z-index: 5;
+  cursor: col-resize;
+}
+.grip-right { right: -7px; }
+.grip-left { left: -7px; }
+
+/* 按住时给一条高亮线，明确"正在拖这里" */
+.rail-grip:active { background: var(--acc-soft); }
 
 /* 收起后只留一条窄带：看长代码时不该被 300px 面板挡着 */
 .rail-right.closed { width: 40px; }
