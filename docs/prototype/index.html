@@ -1,0 +1,2270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DSH Link · 高保真原型</title>
+<style>
+  :root{
+    /* MOSS / 深色（默认）—— 视觉规格见 docs/05-视觉与动效-MOSS.md */
+    --bg:#050806; --s1:#0b1210; --s2:#101a16; --s3:#16211c;
+    --bd:rgba(70,227,166,.18); --bd-strong:rgba(70,227,166,.42);
+    --t1:#E6F3EC; --t2:#8FA79B; --t3:#5B6F66;
+    --accent:#46E3A6; --accent-soft:rgba(70,227,166,.12); --accent-glow:rgba(70,227,166,.35);
+    --run:#46E3A6; --ok:#46E3A6; --warn:#E8C24A; --danger:#FF5C4D;
+    --veil:.38; --glow:1;
+    --r-lg:20px; --r-md:14px; --r-sm:10px;
+    --ease:cubic-bezier(.2,.8,.2,1);
+    --safe-b:env(safe-area-inset-bottom,0px);
+  }
+  /* 550W / 深色：待机、守护、告警。锁屏与"等你"用它 */
+  [data-skin="550w"]{
+    --bg:#0b0605; --s1:#120908; --s2:#170b09; --s3:#1e0e0b;
+    --bd:rgba(255,59,47,.18); --bd-strong:rgba(255,59,47,.42);
+    --t1:#F2EAE4; --t2:#B49A92; --t3:#7A6058;
+    --accent:#FF3B2F; --accent-soft:rgba(255,59,47,.12); --accent-glow:rgba(255,59,47,.45);
+    --run:#FF3B2F; --ok:#3CCB7F; --warn:#E8C24A; --danger:#FF3B2F;
+  }
+  /* 浅色：扫描线与发光全部关闭——亮底上的"光"只会变成脏污 */
+  [data-light="1"]{
+    --bg:#F2F7F4; --s1:#ffffff; --s2:#f4f8f6; --s3:#e9f1ed;
+    --bd:rgba(14,138,95,.16); --bd-strong:rgba(14,138,95,.36);
+    --t1:#0B1512; --t2:#4A5D55; --t3:#7B8D85;
+    --accent:#0E8A5F; --accent-soft:rgba(14,138,95,.1); --accent-glow:rgba(14,138,95,.2);
+    --ok:#0E8A5F; --warn:#A3741A; --danger:#C0392B;
+    --veil:0; --glow:0;
+  }
+  [data-light="1"][data-skin="550w"]{
+    --bg:#F7F1E7; --s1:#fffdf9; --s2:#f8f1e6; --s3:#f0e6d7;
+    --bd:rgba(180,49,31,.16); --bd-strong:rgba(180,49,31,.36);
+    --t1:#1A0F0C; --t2:#6B534C; --t3:#95806F;
+    --accent:#B4311F; --accent-soft:rgba(180,49,31,.1); --accent-glow:rgba(180,49,31,.2);
+    --ok:#1F7A52; --danger:#B4311F;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--t1);
+    font:400 15px/22px -apple-system,BlinkMacSystemFont,"PingFang SC","HarmonyOS Sans","Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;overflow:hidden;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(900px 500px at 78% -8%, var(--accent-soft), transparent 60%),
+      radial-gradient(700px 420px at -10% 100%, var(--accent-soft), transparent 60%);
+    opacity:var(--glow);
+  }
+  /* 材质层：扫描线 + 暗角。全局只有这一层，混色 screen */
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:9;
+    opacity:var(--veil);
+    background:
+      repeating-linear-gradient(0deg,rgba(255,255,255,.016) 0 1px,rgba(0,0,0,0) 1px 4px),
+      radial-gradient(circle at 50% 45%,rgba(0,0,0,0) 38%,rgba(0,0,0,.72) 100%);
+    mix-blend-mode:screen;
+  }
+  .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,"JetBrains Mono",monospace;font-variant-ligatures:none}
+  svg{display:block}
+  .i{width:20px;height:20px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .i.sm{width:16px;height:16px}
+
+  /* ---------- shell ---------- */
+  .app{position:relative;display:flex;height:100dvh;overflow:hidden}
+  .rail{display:none}
+  /* 截 dsh 侧锁屏时用：把侧栏摘掉，让覆盖层真的盖满整个窗口 */
+  body.pc .rail{display:none}
+  .main{position:relative;flex:1;min-width:0;display:flex;flex-direction:column}
+  .screen{display:none;flex:1;min-height:0;flex-direction:column}
+  .screen.on{display:flex}
+  .scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+  .scroll::-webkit-scrollbar{width:0}
+
+  /* ---------- nav bar ---------- */
+  .nav{height:56px;flex:0 0 56px;display:flex;align-items:center;gap:12px;padding:0 8px 0 12px;
+       background:var(--bg);position:relative;z-index:5}
+  .nav h1{font-size:20px;font-weight:600;letter-spacing:-.2px;margin:0;flex:1;min-width:0;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .nav .sub{display:block;font-size:11px;font-weight:500;color:var(--t3);letter-spacing:.2px;margin-top:1px}
+  .iconbtn{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;color:var(--t2);
+           border:0;background:transparent;cursor:pointer;transition:.16s var(--ease)}
+  .iconbtn:active{background:var(--s3);transform:scale(.96)}
+  .iconbtn.primary{color:var(--accent)}
+  .nav .divider{width:1px;height:18px;background:var(--bd)}
+  /* 三段页的 nav 比 Tab 页矮 4px：下面紧跟 36 高的段切换，两个 56 摞一起会把首屏吃掉 */
+  .nav.sm{height:52px;flex:0 0 52px}
+  .nav .add{color:var(--ok);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0;margin-left:4px}
+  .nav .del{color:var(--danger);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0;margin-right:8px}
+
+  /* ---------- status ---------- */
+  .dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;position:relative}
+  .dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(60,203,127,.12)}
+  .dot.run{background:var(--run)}
+  .dot.run::after{content:"";position:absolute;inset:-4px;border-radius:50%;
+    border:1.5px solid rgba(167,139,250,.55);animation:ring 1.8s var(--ease) infinite}
+  .dot.warn{background:var(--warn)}
+  .dot.off{background:#3A4457}
+  @keyframes ring{0%{transform:scale(.7);opacity:.9}70%{transform:scale(1.55);opacity:0}100%{opacity:0}}
+
+  .pill{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;
+        font-size:11px;font-weight:500;color:var(--t2);background:var(--s2);border:1px solid var(--bd)}
+  .pill .sep{width:1px;height:10px;background:var(--bd)}
+
+  /* ---------- device cards ---------- */
+  .list{padding:4px 16px 24px}
+  .banner{display:flex;align-items:center;gap:10px;margin:4px 16px 12px;padding:12px 14px;
+          border-radius:var(--r-md);background:rgba(245,165,36,.10);border:1px solid rgba(245,165,36,.22);
+          color:#F7C776;font-size:13px;font-weight:500}
+  .banner b{color:#FFD79A;font-weight:600}
+  .banner .chev{margin-left:auto;color:rgba(247,199,118,.7)}
+  .dcard{display:flex;gap:14px;align-items:center;padding:16px;border-radius:var(--r-md);
+         background:var(--s1);border:1px solid var(--bd);margin-bottom:10px;cursor:pointer;
+         transition:.18s var(--ease);position:relative;overflow:hidden}
+  .dcard:active{transform:scale(.985);background:var(--s2)}
+  .dcard.active{border-color:color-mix(in srgb, var(--accent) 50%, transparent);background:linear-gradient(180deg,color-mix(in srgb, var(--accent) 10%, transparent),color-mix(in srgb, var(--accent) 3%, transparent))}
+  .dcard .body{flex:1;min-width:0}
+  .dcard .name{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600;letter-spacing:-.1px}
+  .dcard .meta{font-size:13px;color:var(--t2);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .dcard .meta .m{color:var(--t3)}
+  .dcard .more{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;color:var(--t3)}
+  .tag{font-size:10px;font-weight:600;letter-spacing:.3px;padding:2px 6px;border-radius:6px}
+  .tag.lan{color:var(--accent);background:color-mix(in srgb, var(--accent) 16%, transparent)}
+  .tag.relay{color:var(--t2);background:color-mix(in srgb, var(--t2) 14%, transparent)}
+  .tag.admin{color:var(--warn);background:color-mix(in srgb, var(--warn) 14%, transparent)}
+  .ghost{width:100%;height:48px;border-radius:var(--r-md);border:1px dashed var(--bd);background:transparent;
+         color:var(--t2);font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:8px;
+         cursor:pointer;margin-top:6px}
+  .ghost:active{background:var(--s1)}
+
+  /* ---------- section title ---------- */
+  .sect{font-size:11px;font-weight:600;letter-spacing:1px;color:var(--t3);text-transform:uppercase;
+        padding:20px 0 8px;display:flex;align-items:center;gap:8px}
+  .sect .n{color:var(--t3);font-weight:500;letter-spacing:0}
+  .sect .line{flex:1;height:1px;background:var(--bd)}
+
+  /* ---------- session rows ---------- */
+  .srow{display:flex;gap:12px;align-items:center;height:64px;padding:0 14px;border-radius:var(--r-md);
+        cursor:pointer;transition:.16s var(--ease);position:relative}
+  .srow:active{background:var(--s2)}
+  .srow.waiting{background:rgba(245,165,36,.07)}
+  .srow.waiting::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--warn)}
+  .srow .txt{flex:1;min-width:0}
+  .srow .t{font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+           display:flex;align-items:center;gap:6px}
+  .srow .d{font-size:13px;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+  .srow.waiting .d{color:#F7C776}
+  .srow .time{font-size:11px;color:var(--t3);align-self:flex-start;margin-top:14px}
+  /* 会话行右侧：设备名 + 时间两行。设备名必须在行内出现——
+     跨设备聚合后，"这条会话在哪台机器上"比"什么时候"更不能猜 */
+  .srow .rt{display:flex;flex-direction:column;align-items:flex-end;gap:1px;flex:0 0 auto;align-self:flex-start;margin-top:12px}
+  .srow .rt .dev{font-size:11px;color:var(--t3);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.2px}
+  .srow .rt .time{font-size:11px;color:var(--t3);margin:0}
+  .nav .right{font-size:11px;color:var(--t3);flex:0 0 auto;letter-spacing:.3px}
+  .badge{font-size:10px;font-weight:600;padding:1px 6px;border-radius:5px;letter-spacing:.2px}
+  .badge.w{color:#FFD79A;background:rgba(245,165,36,.18)}
+  .badge.r{color:#C4B5FD;background:rgba(167,139,250,.16)}
+
+  /* ---------- chat ---------- */
+  .chat-wrap{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
+  .chat{flex:1;min-height:0;overflow-y:auto;padding:8px 16px 20px;overscroll-behavior:contain}
+  .chat::-webkit-scrollbar{width:0}
+  .daystamp{text-align:center;font-size:11px;color:var(--t3);margin:12px 0 16px}
+  .msg{display:flex;flex-direction:column;margin-bottom:18px;animation:in .22s var(--ease) both}
+  @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .who{font-size:11px;color:var(--t3);margin-bottom:6px;display:flex;gap:8px;align-items:center}
+  .bubble{max-width:82%;align-self:flex-end;background:var(--accent-soft);border:1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+          padding:10px 14px;border-radius:18px 18px 4px 18px;font-size:15px;line-height:22px}
+  .assist{font-size:15px;line-height:23px;color:var(--t1)}
+  .assist .muted{color:var(--t2)}
+  /* 助手文本不用气泡，用左侧 2px 竖条：气泡是"一来一回"的语言，
+     而执行过程是"一直往下"，竖条更像一段连续的旁白 */
+  .assist.bar{padding-left:10px;border-left:2px solid var(--accent);border-radius:1px}
+  .cursor{display:inline-block;width:7px;height:16px;background:var(--accent);border-radius:1px;
+          vertical-align:-3px;margin-left:3px;animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  .act{display:flex;align-items:center;gap:9px;height:34px;padding:0 10px;border-radius:9px;
+       color:var(--t2);font-size:13px;cursor:pointer;transition:.14s var(--ease);margin:2px 0}
+  .act:hover{background:var(--s1)}
+  .act .ico{color:var(--run);display:grid;place-items:center}
+  .act .ico.done{color:var(--ok)}
+  .act .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .act .t b{color:var(--t1);font-weight:500}
+  .act .dur{font-size:11px;color:var(--t3)}
+  .act .code{font-size:12px;color:var(--t2);opacity:.85}
+
+  /* approval inline card */
+  .approve{margin:14px 0 4px;border-radius:var(--r-md);border:1px solid rgba(245,165,36,.34);
+           background:linear-gradient(180deg,rgba(245,165,36,.10),rgba(245,165,36,.03));overflow:hidden;
+           animation:in .24s var(--ease) both}
+  .approve.high{border-color:rgba(255,92,77,.4);background:linear-gradient(180deg,rgba(255,92,77,.10),rgba(255,92,77,.03))}
+  .approve.done{border-color:var(--bd);background:var(--s1);opacity:.85}
+  .approve .hd{display:flex;align-items:center;gap:8px;padding:12px 14px 0;font-size:11px;font-weight:600;
+               letter-spacing:.4px;color:#F7C776}
+  .approve.high .hd{color:#FF9A8F}
+  .approve.done .hd{color:var(--t3)}
+  .approve .cmd{margin:8px 14px 0;padding:10px 12px;border-radius:var(--r-sm);background:rgba(6,9,14,.6);
+                border:1px solid var(--bd);font-size:12.5px;line-height:19px;color:#CFE0FF;overflow-x:auto;white-space:pre}
+  .approve .risk{padding:8px 14px 0;font-size:12px;color:var(--t2);display:flex;gap:6px;align-items:flex-start}
+  .approve .btns{display:flex;gap:10px;padding:14px}
+  .btn{flex:1;height:44px;border-radius:12px;border:1px solid var(--bd);background:var(--s2);color:var(--t1);
+       font-size:15px;font-weight:600;cursor:pointer;transition:.16s var(--ease)}
+  .btn:active{transform:scale(.97)}
+  .btn.primary{background:var(--accent);border-color:transparent;color:#fff;box-shadow:0 6px 18px color-mix(in srgb, var(--accent) 25%, transparent)}
+  .btn.danger{background:rgba(255,92,77,.12);border-color:rgba(255,92,77,.3);color:#FF9A8F}
+  .btn.ghostbtn{background:transparent}
+  .minibtn{height:34px;padding:0 14px;border-radius:10px;border:1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+           background:var(--accent-soft);color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;flex:0 0 auto}
+  .minibtn:active{transform:scale(.97)}
+
+  /* composer */
+  .composer{flex:0 0 auto;padding:8px 12px calc(10px + var(--safe-b));background:linear-gradient(180deg,rgba(10,13,19,.4),rgba(10,13,19,.96));
+            border-top:1px solid rgba(38,48,63,.6);display:flex;gap:8px;align-items:flex-end}
+  .composer .field{flex:1;display:flex;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--bd);
+                   border-radius:20px;padding:6px 8px 6px 12px;min-height:44px}
+  .composer .field input{flex:1;background:transparent;border:0;outline:0;color:var(--t1);font-size:15px;
+                          font-family:inherit;padding:7px 0}
+  .composer .field input::placeholder{color:var(--t3)}
+  .send{width:34px;height:34px;border-radius:50%;border:0;background:var(--accent);color:#fff;display:grid;place-items:center;cursor:pointer}
+  .send:disabled{background:var(--s3);color:var(--t3)}
+
+  /* ---------- files ---------- */
+  .pathbar{margin:4px 16px 12px;padding:10px 12px;border-radius:var(--r-sm);background:var(--s1);border:1px solid var(--bd);
+           display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--t2)}
+  .frow{display:flex;align-items:center;gap:12px;height:52px;padding:0 16px;font-size:14px}
+  .frow .fi{color:var(--t3)}
+  .frow .fi.dir{color:var(--accent)}
+  .frow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .frow .sz{font-size:12px;color:var(--t3)}
+
+  /* ---------- plugins ---------- */
+  .pcard{display:flex;gap:12px;align-items:flex-start;padding:14px;border-radius:var(--r-md);background:var(--s1);
+         border:1px solid var(--bd);margin-bottom:10px}
+  .pcard .ic{width:38px;height:38px;border-radius:11px;background:var(--s3);display:grid;place-items:center;color:var(--accent);flex:0 0 38px}
+  .pcard .body{flex:1;min-width:0}
+  .pcard .nm{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600}
+  .pcard .ver{font-size:11px;color:var(--t3);font-weight:400}
+  .pcard .ds{font-size:12.5px;color:var(--t2);margin-top:3px}
+  .switch{width:44px;height:26px;border-radius:999px;background:var(--s3);border:0;position:relative;cursor:pointer;transition:.2s var(--ease);flex:0 0 44px}
+  .switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#8A94A8;transition:.2s var(--ease)}
+  .switch.on{background:color-mix(in srgb, var(--accent) 90%, transparent)}
+  .switch.on::after{left:21px;background:#fff}
+  .warnbar{display:flex;gap:10px;align-items:flex-start;margin:4px 16px 12px;padding:11px 13px;border-radius:var(--r-sm);
+           background:rgba(245,165,36,.09);border:1px solid rgba(245,165,36,.22);color:#F7C776;font-size:12px;line-height:18px}
+
+  /* ---------- settings ---------- */
+  .setgroup{margin:0 16px 10px;border-radius:var(--r-md);background:var(--s1);border:1px solid var(--bd);overflow:hidden}
+  .setrow{display:flex;align-items:center;gap:12px;min-height:52px;padding:10px 14px;font-size:14px;border-bottom:1px solid var(--bd)}
+  .setrow:last-child{border-bottom:0}
+  .setrow .ic{color:var(--t2)}
+  .setrow .lbl{flex:1;min-width:0}
+  .setrow .lbl small{display:block;font-size:11.5px;color:var(--t3);margin-top:2px}
+  .setrow .val{font-size:13px;color:var(--t3);max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .setrow .chev{color:var(--t3)}
+
+  /* ---------- tabbar ---------- */
+  .tabbar{display:flex;flex:0 0 auto;height:calc(56px + var(--safe-b));padding-bottom:var(--safe-b);
+          background:var(--bg);
+          border-top:1px solid var(--bd);position:relative;z-index:6}
+  .tab{flex:1;border:0;background:transparent;color:var(--t3);display:flex;flex-direction:column;align-items:center;
+       justify-content:center;gap:3px;font-size:10px;font-weight:500;cursor:pointer;position:relative}
+  .tab.on{color:var(--accent)}
+  .tab.on::before{content:"";position:absolute;top:0;width:22px;height:2px;border-radius:2px;background:var(--accent)}
+  .tab .badgeN{position:absolute;top:8px;right:calc(50% - 20px);min-width:16px;height:16px;padding:0 4px;
+               border-radius:8px;background:var(--warn);color:#20160A;font-size:10px;font-weight:700;
+               display:grid;place-items:center}
+
+  /* ---------- sheet ---------- */
+  .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.66);
+            opacity:0;pointer-events:none;transition:.22s var(--ease);z-index:40}
+  [data-light="1"] .backdrop{background:rgba(20,35,30,.42)}
+  .backdrop.on{opacity:1;pointer-events:auto}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--s2);border-radius:22px 22px 0 0;opacity:0;
+         transform:translateY(140%);transition:transform .28s var(--ease), opacity .2s var(--ease);max-height:86dvh;display:flex;flex-direction:column;
+         box-shadow:0 -20px 60px rgba(0,0,0,.5)}
+  .sheet.on{transform:none;opacity:1}
+  .sheet .grab{width:38px;height:4px;border-radius:4px;background:#37415A;margin:8px auto 4px;flex:0 0 auto}
+  .sheet .sh{display:flex;align-items:center;gap:8px;padding:8px 18px 4px;font-size:12px;font-weight:600;letter-spacing:.4px;color:#FF9A8F}
+  .sheet .st{font-size:19px;font-weight:600;padding:0 18px 2px;letter-spacing:-.2px}
+  .sheet .sc{flex:1;overflow-y:auto;padding:8px 18px 4px}
+  .sheet .sf{padding:12px 18px calc(16px + var(--safe-b));display:flex;gap:10px;flex:0 0 auto}
+  .kv{display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:9px 0;border-bottom:1px solid var(--bd)}
+  .kv:last-child{border-bottom:0}
+  .kv .k{color:var(--t2)}
+  .kv .v{color:var(--t1);font-size:12.5px;text-align:right}
+  .sheet .hdlabel{font-size:11px;color:var(--t3);letter-spacing:.6px;font-weight:600;margin:14px 0 6px;text-transform:uppercase}
+  .sheet pre{margin:0;padding:12px;border-radius:var(--r-sm);background:rgba(6,9,14,.7);border:1px solid var(--bd);
+             font-size:12.5px;line-height:19px;color:#CFE0FF;overflow-x:auto}
+  .note{display:flex;gap:8px;font-size:12px;color:var(--t2);line-height:18px;margin-top:12px}
+  .note .ic{color:var(--warn);flex:0 0 auto;margin-top:1px}
+
+  /* 右栏容器在任何宽度都占位为 0，只是不显示；这样 ≥1100 时不用改 DOM */
+  .side{display:none}
+  .chat-col{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
+  .side .sh{display:flex;align-items:center;gap:8px;height:42px;flex:0 0 42px;padding:0 14px;
+            border-bottom:1px solid var(--bd);font-size:11.5px;color:var(--t2);font-weight:600}
+  .side .sh .live{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9px;letter-spacing:1px;
+                  color:var(--ok);padding:2px 5px;border-radius:4px;background:rgba(60,203,127,.12)}
+  .side .sh .cnt{margin-left:auto;font-size:10px;font-weight:400;color:var(--t3);
+                 font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .side .sb{flex:1;min-height:0;overflow-y:auto;padding:6px 0 10px}
+  .side .sb::-webkit-scrollbar{width:0}
+  /* 右栏比主视图窄，时间线左缩进从 38 收到 30，否则正文只剩 280 */
+  .side .tl{padding:2px 12px 6px 30px}
+  .side .tl::before{left:17px}
+  .side .trow .ico{left:-18px}
+
+  /* ---------- 响应式：手机 / 平板竖屏 / 平板横屏 ---------- */
+  /*
+   * 断点全部带 min-height，不是随手写的。
+   * 手机横屏是 844×390：宽度已过 820，若只按宽度切，横屏手机会被当成平板，
+   * 白白让出 300px 侧栏给一台本来就只有 390 高的屏幕——正文只剩 40px。
+   * 所以"是不是平板"必须同时看两个方向。
+   */
+  @media (min-width:820px) and (min-height:600px){
+    .rail{display:flex;flex-direction:column;width:300px;flex:0 0 300px;background:var(--s1);
+          border-right:1px solid var(--bd)}
+    .rail .rh{display:flex;align-items:center;gap:10px;padding:18px 18px 10px}
+    .brand{display:flex;align-items:center;gap:9px;font-size:16px;font-weight:600;letter-spacing:-.2px}
+    .mark{width:26px;height:26px;border-radius:8px;background:linear-gradient(140deg,var(--accent),var(--accent));
+          display:grid;place-items:center;box-shadow:0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent)}
+    .mark svg{width:15px;height:15px;stroke:#fff;stroke-width:2.1;fill:none;stroke-linecap:round}
+    .rail .rscroll{flex:1;overflow-y:auto;padding:0 10px}
+    .rail .rscroll::-webkit-scrollbar{width:0}
+    .rail .dev{display:flex;align-items:center;gap:10px;padding:10px 10px;border-radius:12px;cursor:pointer;transition:.16s var(--ease)}
+    .rail .dev:hover{background:var(--s2)}
+    .rail .dev.on{background:var(--s2);box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent)}
+    .rail .dev .nm{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .rail .dev .mt{font-size:11px;color:var(--t3);margin-top:1px}
+    .rail .dev .c{margin-left:auto;font-size:10px;color:var(--t3)}
+    .rail .rfoot{display:flex;gap:4px;padding:8px 12px calc(12px + var(--safe-b));border-top:1px solid var(--bd)}
+    .rail .rfoot .iconbtn{flex:1;height:44px}
+    .rail .rfoot .iconbtn.on{color:var(--accent);background:var(--accent-soft)}
+    /* 平板不再用底部 Tab：侧栏已经承担了导航，Tab 只会和侧栏抢同一件事 */
+    .tabbar{display:none}
+    .nav{padding-left:20px}
+    .list{padding-left:24px;padding-right:24px;max-width:760px;margin:0 auto;width:100%}
+    .chat{padding-left:24px;padding-right:24px;max-width:760px;margin:0 auto;width:100%}
+    .composer{max-width:760px;margin:0 auto;width:100%}
+    .segs{margin:0 24px}
+    /* 竖屏下抽屉不该拉满 834 宽——那是一条横幅，不是抽屉 */
+    .sheet{left:50%;transform:translate(-50%,140%);width:560px;border-radius:20px;bottom:32px;max-height:78dvh}
+    .sheet.on{transform:translate(-50%,0);opacity:1}
+    .head{padding-left:24px;padding-right:24px}
+    .statline{padding:0 24px}
+    .crumb{padding-left:24px}
+  }
+  @media (min-width:1100px) and (min-height:600px){
+    .rail{width:344px;flex-basis:344px}
+    /* 双栏：左边对话，右边执行过程同时滚。
+       这是平板上唯一比手机强的场景——§5 里那句"不用来回切段"就落在这里。
+       手机上不给，是因为 390 宽切成两栏每栏不到 190，什么也读不了。 */
+    .chat-wrap{flex-direction:row;align-items:stretch}
+    .chat-col{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+    .chat{max-width:660px}
+    .composer{max-width:660px}
+    .side{display:flex;flex-direction:column;flex:0 0 348px;min-height:0;
+          border-left:1px solid var(--bd);background:var(--s1)}
+  }
+  /* 手机横屏：高度只有 390，先砍竖向的壳，再谈内容。
+     这里刻意不砍任何信息——只压缩 nav / 段切换 / 输入框的高度合计约 40px。 */
+  @media (max-height:520px) and (orientation:landscape){
+    .nav{height:44px;flex-basis:44px}
+    .nav.sm{height:42px;flex-basis:42px}
+    .nav h1{font-size:17px}
+    .segs{height:30px}
+    .tabbar{height:calc(46px + var(--safe-b))}
+    .composer{padding:4px 10px calc(6px + var(--safe-b))}
+    .composer .field{min-height:38px}
+    .qbar,.qpanel{max-height:34vh;overflow-y:auto}
+    .daystamp{margin:6px 0 10px}
+    .head{padding:4px 14px 2px}
+    .statline{height:18px}
+    .list{padding:2px 16px 16px}
+    .scroll{padding-bottom:calc(8px + var(--safe-b))}
+    .lockwrap{padding:8px}
+    .lockcard{transform:scale(.92)}
+    /* 横屏的对话区只有 222 高，一张审批卡就占满。这里不是"缩小字体"，
+       是**只压缩壳的留白**：命令块行高 19→17、按钮 44→38、外距 14→10，
+       合计省 34px，正好让"标题 + 命令 + 风险 + 两个按钮"落在一屏之内。
+       按钮高度 38 仍大于 36 的可点最小面积，没有牺牲触控。 */
+    .approve .hd{padding-top:9px;font-size:10.5px}
+    .approve .cmd{margin-top:6px;padding:7px 10px;line-height:17px;font-size:12px}
+    .approve .risk{padding-top:6px;font-size:11.5px;line-height:16px}
+    .approve .btns{padding:10px;gap:8px}
+    .approve .btns .btn{height:38px;font-size:14px}
+    /* 横屏滚动位置停在"卡片底对齐输入框"，上面必然剩半行字。
+       加 16px 的顶边渐隐，让那半行是"淡出"而不是"被切断"——
+       被切断的行会让人以为渲染坏了，淡出的行一看就知道还能往上滚。 */
+    .chat{-webkit-mask-image:linear-gradient(180deg,transparent 0,#000 16px);
+          mask-image:linear-gradient(180deg,transparent 0,#000 16px)}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+  }
+
+  /* ── 锁屏（550W 终端框）──────────────────────────────────────────── */
+  .lockwrap{
+    position:absolute;inset:0;display:grid;place-items:center;padding:16px;
+    background:radial-gradient(ellipse 90% 70% at 50% 38%,#160a07 0%,#0a0504 46%,#020202 100%);
+    z-index:30;
+  }
+  #s-lock{position:relative}
+  .lockcard{
+    width:min(520px,94%);border:1px solid rgba(255,59,47,.42);border-radius:10px;
+    background:linear-gradient(180deg,rgba(26,9,7,.97),rgba(9,4,4,.99));
+    padding:0 24px 18px;color:#F2EAE4;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    box-shadow:0 0 0 1px rgba(255,59,47,.1),0 30px 90px rgba(0,0,0,.82),
+               0 0 70px rgba(255,59,47,.14),inset 0 0 70px rgba(255,59,47,.05);
+  }
+  .lockcard.shake{animation:lshake .38s cubic-bezier(.36,.07,.19,.97)}
+  @keyframes lshake{0%,100%{transform:translateX(0)}15%{transform:translateX(-9px)}
+    32%{transform:translateX(8px)}50%{transform:translateX(-5px)}68%{transform:translateX(4px)}84%{transform:translateX(-2px)}}
+  .lockbar{
+    display:flex;align-items:center;gap:8px;height:34px;margin:0 -24px 20px;padding:0 14px;
+    border-bottom:1px solid rgba(255,59,47,.22);
+    background:linear-gradient(180deg,rgba(58,18,14,.55),rgba(24,8,6,.2));
+    font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,190,180,.82);
+  }
+  .lockbar b{font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lockbar .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .emblem{
+    width:48px;height:48px;margin:4px auto 14px;border-radius:50%;
+    border:1px solid rgba(255,59,47,.5);display:grid;place-items:center;
+    color:#FF6A5E;font-size:17px;animation:lbreathe 2.4s ease-in-out infinite;
+  }
+  @keyframes lbreathe{0%,100%{box-shadow:0 0 0 0 rgba(255,59,47,.28)}50%{box-shadow:0 0 24px 6px rgba(255,59,47,.18)}}
+  .locksub{text-align:center;font-size:12px;letter-spacing:.18em;color:rgba(255,190,180,.5);margin-bottom:16px}
+  .lockfield{
+    display:flex;align-items:center;gap:10px;height:48px;padding:0 12px;border-radius:8px;
+    border:1px solid rgba(255,59,47,.3);background:rgba(10,5,4,.9);cursor:text;
+  }
+  .lockfield.focus{border-color:rgba(255,59,47,.72);box-shadow:0 0 0 1px rgba(255,59,47,.2)}
+  .dots{display:flex;gap:10px;flex:1}
+  .dots i{width:9px;height:9px;border-radius:50%;background:rgba(255,190,180,.22);transition:.16s}
+  .dots i.on{background:#FF3B2F;box-shadow:0 0 8px rgba(255,59,47,.8);transform:scale(1.18)}
+  .lockmsg{min-height:16px;margin-top:9px;font-size:11.5px;color:#FF8A7E;letter-spacing:.03em}
+  .lockrow{display:flex;gap:10px;margin-top:8px}
+  .lockbtn{
+    flex:1;height:46px;border-radius:8px;font:inherit;font-size:13.5px;cursor:pointer;
+    border:1px solid rgba(255,59,47,.34);background:rgba(30,12,10,.9);color:#F2EAE4;transition:.16s;
+  }
+  .lockbtn.primary{background:#FF3B2F;border-color:transparent;color:#fff;font-weight:600;
+    box-shadow:0 6px 20px rgba(255,59,47,.28)}
+  .lockbtn:active{transform:scale(.985)}
+  .lockfoot{display:flex;justify-content:space-between;margin-top:14px;font-size:10.5px;
+    letter-spacing:.06em;color:rgba(255,190,180,.42)}
+
+  /* ── 设置里的皮肤选择与诚实说明 ───────────────────────────────────── */
+  .skinpick{display:flex;gap:6px;width:100%;margin-top:2px}
+  .pill{
+    flex:1;height:30px;border-radius:8px;border:1px solid var(--bd);background:var(--s2);
+    color:var(--t2);font-size:11.5px;cursor:pointer;transition:.16s var(--ease);
+  }
+  .pill.on{background:var(--accent-soft);border-color:var(--bd-strong);color:var(--accent);font-weight:600}
+  .btn-mini{
+    height:28px;padding:0 12px;border-radius:8px;border:1px solid var(--bd);
+    background:var(--s2);color:var(--accent);font-size:12px;cursor:pointer;
+  }
+  .honest{
+    margin:10px 2px 0;padding:11px 13px;border-radius:var(--r-sm);
+    border-left:2px solid var(--warn);background:rgba(232,194,74,.06);
+    font-size:11.5px;line-height:18px;color:var(--t2);
+  }
+  .honest b{color:var(--warn);font-weight:600}
+
+  /* ==========================================================
+     冷启动：boot → emblem → wipe，1.4s，随时可跳过
+     规格见 docs/05-视觉与动效-MOSS.md §4
+     原则：只演一次，不阻塞首屏可用；第二次看还占时间的东西必须砍掉
+     ========================================================== */
+  #boot{
+    position:fixed;inset:0;z-index:200;background:var(--bg);
+    display:grid;place-items:center;overflow:hidden;
+    transition:opacity .34s var(--ease), transform .34s var(--ease);
+  }
+  #boot.out{opacity:0;transform:translateY(-6px);pointer-events:none}
+  /* 底光：与页面同一套单色光，启动时更亮一点——这是整段动画唯一"亮起来"的时刻 */
+  #boot::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(440px 280px at 50% 46%, var(--accent-soft), transparent 70%);
+    opacity:var(--glow);
+  }
+  #boot::after{
+    content:"";position:absolute;inset:-20% 0;pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 1px, transparent 1px 4px);
+    mix-blend-mode:screen;opacity:calc(var(--veil) * .9);
+  }
+  .boot-stage{position:relative;display:grid;place-items:center;width:200px;height:120px}
+  .boot-stage > *{grid-area:1/1}
+
+  /* 阶段 1（0–500ms）：等宽字从字距散开收拢，带一个光标 */
+  .boot-word{
+    font:500 12px/1 ui-monospace,SFMono-Regular,"SF Mono",Menlo,"JetBrains Mono",monospace;
+    letter-spacing:.34em;text-indent:.34em;color:var(--t2);white-space:nowrap;
+    animation:bootWord .48s var(--ease) both, bootWordOut .26s var(--ease) .5s both;
+  }
+  .boot-word i{
+    display:inline-block;width:6px;height:10px;margin-left:4px;vertical-align:-1px;
+    background:var(--accent);box-shadow:0 0 6px var(--accent-glow);
+    animation:bootBlink .64s steps(1) infinite;
+  }
+  @keyframes bootWord{from{opacity:0;letter-spacing:.9em;filter:blur(3px)} to{opacity:1;letter-spacing:.34em;filter:blur(0)}}
+  @keyframes bootWordOut{to{opacity:0;filter:blur(2px)}}
+  @keyframes bootBlink{0%,49%{opacity:1} 50%,100%{opacity:0}}
+
+  /* 阶段 2（520–1180ms）：徽记亮起，一圈波纹扩散出去 */
+  .boot-emblem{
+    position:relative;width:54px;height:54px;opacity:0;
+    animation:bootEmblem .44s var(--ease) .52s both;
+  }
+  @keyframes bootEmblem{from{opacity:0;transform:scale(.72)} to{opacity:1;transform:scale(1)}}
+  .boot-emblem .ring{position:absolute;border-radius:50%;border:1px solid var(--bd-strong)}
+  .boot-emblem .ring:nth-child(1){inset:0;opacity:.5}
+  .boot-emblem .ring:nth-child(2){inset:11px;opacity:.8}
+  .boot-emblem .core{
+    position:absolute;inset:21px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 20px var(--accent-glow),0 0 4px var(--accent);
+  }
+  .boot-emblem .ping{
+    position:absolute;inset:0;border-radius:50%;border:1px solid var(--accent);
+    animation:bootPing 1.05s var(--ease) .7s infinite;
+  }
+  @keyframes bootPing{0%{transform:scale(.62);opacity:.8} 100%{transform:scale(2.15);opacity:0}}
+
+  /* 一道扫描线从上往下走一遍——CRT 开机的那一下 */
+  .boot-sweep{
+    position:absolute;left:0;right:0;height:38%;pointer-events:none;
+    background:linear-gradient(180deg,transparent,var(--accent-soft) 70%,transparent);
+    animation:bootSweep 1s var(--ease) .5s both;
+  }
+  @keyframes bootSweep{from{transform:translateY(-120%);opacity:0} 30%{opacity:.9} to{transform:translateY(340%);opacity:0}}
+
+  /* 底部一条进度线：不是"加载进度"，是让人知道这层会自己走掉 */
+  .boot-line{
+    position:absolute;left:50%;bottom:calc(14% + var(--safe-b));width:120px;height:1px;
+    transform:translateX(-50%);background:var(--bd);overflow:hidden;
+  }
+  .boot-line i{
+    display:block;height:100%;width:100%;background:var(--accent);
+    transform:scaleX(0);transform-origin:left;box-shadow:0 0 8px var(--accent-glow);
+    animation:bootLine 1.3s cubic-bezier(.3,.9,.3,1) .1s both;
+  }
+  @keyframes bootLine{to{transform:scaleX(1)}}
+
+  .boot-skip{
+    position:absolute;right:16px;top:calc(12px + env(safe-area-inset-top,0px));
+    padding:8px 6px;background:transparent;border:0;cursor:pointer;
+    font:500 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+    letter-spacing:.2em;color:var(--t3);transition:color .16s var(--ease);
+  }
+  .boot-skip:active{color:var(--t1)}
+  @media (prefers-reduced-motion: reduce){
+    #boot{display:none}
+  }
+
+  /* ==========================================================
+     需求 10 / 11 新增组件
+     规格见 docs/08-页面UI设计.md §3.3–§3.12
+     ========================================================== */
+
+  /* 别名：应用里叫 --acc-soft，原型早期叫 --accent-soft。统一到后者，只在这一层做映射 */
+  :root{
+    --acc:var(--accent); --acc-soft:var(--accent-soft); --acc-glow:var(--accent-glow);
+    --danger-soft:rgba(255,92,77,.10); --danger-bd:rgba(255,92,77,.34);
+    --warn-soft:rgba(232,194,74,.10); --warn-bd:rgba(232,194,74,.30);
+    --code-kw:#7DD3FC; --code-str:#E8C24A; --code-cm:var(--t3); --code-num:#46E3A6;
+  }
+  [data-light="1"]{
+    --danger-soft:rgba(192,57,43,.07); --danger-bd:rgba(192,57,43,.30);
+    --warn-soft:rgba(163,116,26,.08); --warn-bd:rgba(163,116,26,.26);
+    --code-kw:#0B6EA8; --code-str:#8A5B00; --code-cm:#8B9A94; --code-num:#0E8A5F;
+  }
+  [data-skin="550w"]{
+    --danger-soft:rgba(255,59,47,.10); --danger-bd:rgba(255,59,47,.42);
+    --code-num:#3CCB7F;
+  }
+
+  /* ── 终端框：设备卡与所有"有边界的内容块" ─────────────────────── */
+  .term{
+    position:relative;border:1px solid var(--bd-strong);border-radius:10px;
+    background:linear-gradient(180deg,var(--s1) 96%,var(--bg) 98%);
+    box-shadow:0 0 0 1px rgba(0,0,0,.2),0 12px 40px rgba(0,0,0,.45),inset 0 0 60px var(--acc-soft);
+    overflow:hidden;margin-bottom:10px;transition:.16s var(--ease);cursor:pointer;
+  }
+  .term:active{transform:scale(.99)}
+  /* 浅色下三层阴影只剩"一点点浮起"——亮底上投重影是脏的 */
+  [data-light="1"] .term{box-shadow:0 1px 2px rgba(0,0,0,.04),0 8px 22px rgba(20,40,32,.06);background:var(--s1)}
+  .term-bar{
+    display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;
+    border-bottom:1px solid var(--bd);background:linear-gradient(180deg,var(--acc-soft),transparent);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+    letter-spacing:1.3px;text-transform:uppercase;color:var(--t3);
+  }
+  .term-bar .name{
+    flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:12px;letter-spacing:.2px;text-transform:none;color:var(--t1);
+  }
+  .term-bar .st{font-size:10px;letter-spacing:.6px;text-transform:none}
+  .term-bar .st.r{color:var(--run)} .term-bar .st.o{color:var(--t3)}
+  .term-bar .st.d{color:var(--danger)} .term-bar .st.w{color:var(--warn)}
+  .term-body{padding:14px}
+  .term.hot{border-color:var(--danger-bd);box-shadow:0 0 0 1px rgba(0,0,0,.2),0 12px 40px rgba(0,0,0,.45),inset 0 0 60px var(--danger-soft)}
+  .term.hot .term-bar{background:linear-gradient(180deg,var(--danger-soft),transparent)}
+  /* 离线卡：抽掉内发光。光即状态，不发光的终端卡就是"关机" */
+  .term.off{box-shadow:0 6px 20px rgba(0,0,0,.35);border-color:var(--bd);background:var(--s1)}
+  .term.off .term-bar{background:transparent}
+  .term.off .term-bar .name{color:var(--t3)}
+  .term-title{font-size:14px;font-weight:600;line-height:20px}
+  .term-title.bad{color:var(--danger)}
+  .term-meta{font-size:12.5px;line-height:18px;color:var(--t2);margin-top:2px}
+  .term-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--t3);letter-spacing:.3px}
+  .term-use{font-size:13px;line-height:19px;color:var(--t2);margin-top:6px}
+  .term-use b{color:var(--run);font-weight:500}
+
+  /* ── 状态点（9px）与三格波 ───────────────────────────────────── */
+  /* 锁定：实心红点，故意不呼吸。会呼吸的灯表示"在做事"，锁住表示"停住了" */
+  .dot.danger{background:var(--danger);box-shadow:0 0 9px var(--danger)}
+  .dot.glow{background:var(--acc);box-shadow:0 0 10px var(--acc-glow);animation:breathe 2.4s ease-in-out infinite}
+  @keyframes breathe{0%,100%{box-shadow:0 0 6px var(--acc-glow);opacity:.85}50%{box-shadow:0 0 14px var(--acc-glow);opacity:1}}
+  .dot.offish{background:transparent;border:1px solid var(--t3);box-shadow:none}
+  .doff{width:9px;height:9px;border-radius:50%;flex:0 0 9px;border:1px solid var(--t3)}
+  .wave{display:inline-flex;align-items:flex-end;gap:2px;height:12px;flex:0 0 13px}
+  .wave i{width:3px;background:var(--warn);border-radius:1px;animation:waveA 1.2s ease-in-out infinite}
+  .wave i:nth-child(1){height:4px} .wave i:nth-child(2){height:7px;animation-delay:.15s} .wave i:nth-child(3){height:10px;animation-delay:.3s}
+  @keyframes waveA{0%,100%{opacity:.35;transform:scaleY(.7)}50%{opacity:1;transform:scaleY(1)}}
+
+  /* ── 顶部品牌行与统计行（P1）───────────────────────────────── */
+  .head{display:flex;align-items:center;gap:8px;padding:calc(6px + env(safe-area-inset-top,0px)) 16px 6px}
+  .brand2{font-size:19px;font-weight:700;letter-spacing:2px;color:var(--t1)}
+  .brand2 em{font-style:normal;color:var(--accent)}
+  .vtag{font-size:10px;font-weight:500;letter-spacing:.6px;color:var(--t3);align-self:flex-end;margin-bottom:3px}
+  .head .iconbtn{margin-left:auto}
+  .statline{display:flex;align-items:center;gap:5px;height:20px;padding:0 16px;font-size:12px;color:var(--t3)}
+  .statline b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:500;color:var(--t1);letter-spacing:.3px}
+  .statline .sep{opacity:.5}
+  .statline .todo{margin-left:auto;font-size:11px;letter-spacing:.4px;color:var(--warn)}
+  .adder{display:flex;align-items:center;justify-content:center;gap:10px;height:56px;border-radius:10px;
+         border:1px dashed var(--bd);color:var(--t2);font-size:13.5px;margin-top:4px;cursor:pointer}
+  .adder .plus{font-size:18px;color:var(--accent);line-height:1}
+  .adder .hint{font-size:11px;color:var(--t3)}
+  .footline{text-align:center;font-size:10.5px;letter-spacing:.4px;color:var(--t3);opacity:.7;padding:14px 0 20px}
+  .btn.alert{background:var(--danger-soft);border-color:var(--danger-bd);color:var(--danger);font-weight:600;height:38px;padding:0 20px;flex:0 0 auto}
+
+  /* ── 三段切换（SegmentTabs）─────────────────────────────────── */
+  .segs{display:flex;height:36px;margin:0 12px;border-bottom:1px solid var(--bd);position:relative;flex:0 0 auto}
+  .seg{flex:1;border:0;background:transparent;color:var(--t3);font:500 13px/1 inherit;cursor:pointer;position:relative;
+       display:flex;align-items:center;justify-content:center;gap:5px}
+  .seg.on{color:var(--accent);font-weight:600}
+  .seg.on::after{content:"";position:absolute;bottom:-1px;left:50%;transform:translateX(-50%);
+                 width:34px;height:2px;border-radius:2px;background:var(--accent)}
+  .seg .n{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;padding:0 4px;border-radius:4px;
+          background:var(--s3);color:var(--t2);line-height:14px}
+  .seg.on .n{background:var(--accent-soft);color:var(--accent)}
+
+  /* ── 执行过程时间线 ─────────────────────────────────────────── */
+  .filterbar{display:flex;align-items:center;gap:8px;height:34px;padding:0 16px;font-size:11.5px;color:var(--t3);flex:0 0 auto}
+  .filterbar .gear{margin-left:auto;color:var(--t3)}
+  .tl{position:relative;padding:2px 16px 8px 38px;margin:0}
+  .tl::before{content:"";position:absolute;left:21px;top:14px;bottom:16px;width:1px;background:var(--bd-strong);opacity:.6}
+  .trow{position:relative;padding:7px 0;min-height:40px}
+  .trow .ico{position:absolute;left:-22px;top:8px;width:12px;height:12px;display:grid;place-items:center;
+             background:var(--bg);box-shadow:0 0 0 2px var(--bg);border-radius:3px;
+             overflow:visible;white-space:nowrap;
+             font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;line-height:1;color:var(--t3)}
+  .trow .ix{color:var(--t3)} .trow .ix.a{color:var(--accent)} .trow .ix.w{color:var(--warn)} .trow .ix.d{color:var(--danger)} .trow .ix.m{color:var(--t2)}
+  .trow .h{display:flex;align-items:center;gap:8px}
+  .trow .tx{flex:1;min-width:0;font-size:13px;line-height:19px;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .trow .tx.dim{color:var(--t2)}
+  .trow .tx code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--t1)}
+  .trow .du{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--t3);flex:0 0 auto}
+  .trow .sub{margin-top:3px;font-size:11px;line-height:15px;color:var(--t3);display:flex;align-items:center;gap:6px}
+  .trow .add{color:var(--ok);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+  .trow .del{color:var(--danger);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+  .trow.bad .tx{color:var(--danger)}
+  .trow.bad{box-shadow:inset -2px 0 0 var(--danger)}
+  .trow.pend .ico{color:var(--warn)}
+  .trow.appr{background:var(--warn-soft);border-radius:8px;box-shadow:inset 0 0 0 1px var(--warn-bd);padding:8px 10px 8px 28px;margin:4px 0}
+  .trow.appr .ico{left:9px;top:10px;background:transparent;box-shadow:none}
+  .trow.appr .act{margin-left:8px;flex:0 0 auto;height:24px;padding:0 8px;border-radius:6px;border:1px solid var(--warn-bd);
+                  background:transparent;color:var(--warn);font-size:11px;font-weight:500}
+  /* 被裁剪的条目：虚线框，**不能塌成细条** */
+  .redact{margin:6px 0 2px;padding:12px;border-radius:8px;border:1px dashed var(--bd);
+          background:repeating-linear-gradient(135deg,transparent 0 5px,var(--s2) 5px 10px);
+          display:flex;align-items:center;gap:8px;font-size:11px;color:var(--t3)}
+  .redact .lk{color:var(--t3);font-size:12px}
+  .tgroup{display:flex;align-items:center;gap:8px;margin:10px 0 0;color:var(--t3);font-size:11px;
+          font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.6px}
+  .tgroup::before,.tgroup::after{content:"";flex:1;height:1px;border-top:1px dashed var(--bd)}
+  .newjump{position:absolute;right:14px;bottom:calc(104px + var(--safe-b));height:36px;padding:0 14px;border-radius:18px;
+           background:var(--accent);color:#fff;font-size:12px;font-weight:600;border:0;box-shadow:0 8px 22px var(--acc-glow)}
+
+  /* ── 队列条（收起 / 展开）──────────────────────────────────── */
+  .qbar{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;flex:0 0 auto;
+        background:var(--s2);border-top:1px solid var(--bd);cursor:pointer;
+        font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;letter-spacing:1.2px;color:var(--t3)}
+  .qbar .plus{color:var(--accent);font-size:12px;line-height:1}
+  .qbar b{color:var(--accent);font-weight:500}
+  .qbar .pv{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+            font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+            font-size:11.5px;letter-spacing:0;color:var(--t3)}
+  .qbar .chev{color:var(--t3);font-size:10px}
+  .qpanel{flex:0 0 auto;background:var(--s1);border-top:1px solid var(--bd)}
+  .qh{display:flex;align-items:center;gap:6px;height:32px;padding:0 12px;font-size:12px;font-weight:600;color:var(--t1)}
+  .qh .n{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;font-weight:400;color:var(--t3);letter-spacing:.6px}
+  .qh .fold{margin-left:auto;color:var(--t3);font-size:10px;cursor:pointer}
+  .qitem{display:flex;align-items:flex-start;gap:10px;min-height:52px;padding:9px 12px;border-top:1px solid var(--bd)}
+  .qitem .idx{width:16px;flex:0 0 16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--t3);margin-top:4px}
+  .qitem .grip{flex:0 0 12px;color:var(--t3);font-size:11px;letter-spacing:-1px;margin-top:3px}
+  .qitem .txwrap{flex:1;min-width:0}
+  .qitem .tx{font-size:13px;line-height:18px;color:var(--t1);
+             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .qitem .x{width:44px;height:44px;margin:-4px -10px 0 0;display:grid;place-items:center;color:var(--t3);font-size:13px;border:0;background:transparent}
+  .qitem.sending{background:var(--s2);position:relative;overflow:hidden}
+  .qitem.sending .tx{color:var(--t3)} .qitem.sending .grip{opacity:0}
+  .qitem.sending::after{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;
+    background:linear-gradient(180deg,transparent,var(--accent),transparent);animation:scanDown 1.8s ease-in-out infinite}
+  @keyframes scanDown{0%{transform:translateY(-100%)}100%{transform:translateY(100%)}}
+  .qitem.failed{background:var(--danger-soft);box-shadow:inset 2px 0 0 var(--danger)}
+  .qitem.failed .tx{color:var(--t2);-webkit-line-clamp:1}
+  .qitem .why{font-size:11px;line-height:15px;color:var(--t3);margin-top:3px;display:flex;align-items:center;gap:8px}
+  .qitem .why .rs{height:24px;padding:0 9px;border-radius:6px;border:1px solid var(--bd);background:var(--s2);
+                  color:var(--accent);font-size:11px;font-weight:500}
+  .qfull{display:flex;align-items:center;gap:6px;padding:8px 12px;font-size:11px;color:var(--warn);border-top:1px solid var(--bd)}
+
+  /* ── 文件浏览 ───────────────────────────────────────────────── */
+  .crumb{display:flex;align-items:center;gap:3px;height:28px;padding:0 16px;flex:0 0 auto;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--t3);overflow:hidden;white-space:nowrap}
+  .crumb .last{color:var(--t1)}
+  .crumb .sp{opacity:.55}
+  .ftree{flex:1;min-height:0;overflow-y:auto}
+  .f2{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 16px;border-bottom:1px solid var(--bd)}
+  .f2:last-child{border-bottom:0}
+  .f2 .fi{flex:0 0 16px;width:16px;color:var(--t2);display:grid;place-items:center}
+  .f2.dir .fi{color:var(--accent)}
+  .f2 .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;color:var(--t1)}
+  .f2.file .nm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+  .f2 .sz{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--t3);flex:0 0 auto}
+  .f2 .gs{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;width:12px;flex:0 0 12px;text-align:center}
+  .gs.M{color:var(--warn)} .gs.A{color:var(--ok)} .gs.D{color:var(--danger)}
+  .gs.q{color:var(--t3)} .gs.c{color:var(--t2)}
+  .f2 .go{color:var(--t3);font-size:14px;flex:0 0 auto}
+  .f2 .thumb{width:16px;height:16px;border-radius:3px;background:linear-gradient(140deg,var(--s3),var(--s2));flex:0 0 16px}
+  .upsect{border-top:1px solid var(--bd);padding-top:2px;flex:0 0 auto}
+  .upsect .hd{display:flex;align-items:center;gap:6px;padding:8px 16px 2px;font-size:11px;color:var(--t3)}
+  .uprow{display:flex;align-items:center;gap:10px;height:40px;padding:0 16px}
+  .uprow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--t1)}
+  .uprow .sz{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--t3)}
+  .uprow .ring{width:20px;height:20px;flex:0 0 20px;border-radius:50%;
+               background:conic-gradient(var(--accent) 0 68%, var(--s3) 68% 100%);
+               display:grid;place-items:center}
+  .uprow .ring::after{content:"";width:14px;height:14px;border-radius:50%;background:var(--s1)}
+  .uprow .done{color:var(--ok);font-size:13px}
+
+  /* ── 代码预览 ───────────────────────────────────────────────── */
+  .code{flex:1;min-height:0;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+        font-size:12px;line-height:18px;padding:6px 0 10px}
+  .cl{display:flex;min-height:18px}
+  .cl .ln{width:32px;flex:0 0 32px;text-align:right;padding-right:10px;color:var(--t3);font-size:10px;
+          line-height:18px;user-select:none}
+  .cl .cd{white-space:pre;padding-right:14px;color:var(--t1)}
+  .cl.add{box-shadow:inset 2px 0 0 var(--ok)}
+  .cl.del{box-shadow:inset 2px 0 0 var(--danger)}
+  .cl.del .cd{color:var(--t3)}
+  .cl .k{color:var(--code-kw)} .cl .s{color:var(--code-str)} .cl .c{color:var(--code-cm)} .cl .nm2{color:var(--code-num)}
+  .loadmore{flex:0 0 auto;padding:10px 16px calc(12px + var(--safe-b));border-top:1px solid var(--bd)}
+  .loadmore .t{text-align:center;font-size:11px;color:var(--t3);margin-bottom:8px;
+               font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.4px}
+  .loadmore .b{width:100%;height:36px;border-radius:9px;border:1px solid var(--bd);background:transparent;
+               color:var(--t2);font-size:12.5px}
+
+  /* 图片预览 —— P6 的另一种渲染形态，不是另一个页面（见 08 §3.7）。
+     不复用 .code 的原因：代码要"从第 1 行往下排"，图片要"居中 + 等比 + 可全屏"，
+     两者除了都占满剩余高度之外没有共同点。 */
+  .imgview{display:none;flex:1;min-height:0;flex-direction:column;align-items:center;
+           justify-content:center;gap:14px;padding:20px 16px;overflow:auto}
+  #s-file.img .code,#s-file.img .loadmore{display:none}
+  #s-file.img .imgview{display:flex}
+  /* width:100% 不能省：.imgview 是 align-items:center，flex item 的交叉轴尺寸
+     默认由内容决定，SVG 又会撑成自己的固有宽 —— 结果就是"适配宽度"变成"原尺寸"。
+     图是 302 宽的竖图时看不出来，换成横图会立刻缩成一条。 */
+  .imgview .frame{border-radius:12px;overflow:hidden;border:1px solid var(--bd);background:var(--s2);
+                  box-shadow:0 12px 34px rgba(0,0,0,.34);line-height:0;width:100%}
+  /* max-height 交给 SVG 的 preserveAspectRatio 处理：它默认 xMidYMid meet，
+     宽高比不匹配时留白而不是拉伸，所以图片永远不会变形。 */
+  .imgview .frame svg{display:block;width:100%;height:auto;max-height:60vh}
+  .imgview .meta{display:flex;gap:14px;align-items:center;font-size:10.5px;color:var(--t3);
+                 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3px}
+  .imgview .meta i{width:1px;height:9px;background:var(--bd);font-style:normal}
+  .imgview .hint{font-size:11px;color:var(--t3);letter-spacing:.2px}
+
+  /* ── 仓库视图 ───────────────────────────────────────────────── */
+  .repohead{display:flex;align-items:center;gap:10px;height:48px;padding:0 12px;margin:8px 12px 4px;flex:0 0 auto;
+            border-radius:10px;background:var(--s1);border:1px solid var(--bd);
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+  .repohead .br{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--accent)}
+  .repohead .br .i{stroke-width:2}
+  .repohead>*{flex:0 0 auto;white-space:nowrap}
+  .repohead .ab{display:flex;gap:7px;color:var(--t3);font-size:11px}
+  .repohead .ab .ahead{color:var(--ok)}
+  .repohead .dirty{margin-left:auto;color:var(--warn);font-size:10.5px;letter-spacing:.4px}
+  .repohead .clean{margin-left:auto;color:var(--t3);font-size:10.5px;letter-spacing:.4px}
+  .commit{display:flex;flex-direction:column;justify-content:center;min-height:56px;padding:8px 16px;border-bottom:1px solid var(--bd)}
+  .commit .sj{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--t1);
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .commit .mt{display:flex;align-items:center;gap:8px;margin-top:3px;
+              font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--t3)}
+  .ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9.5px;line-height:14px;
+       padding:0 4px;border-radius:3px;letter-spacing:.4px}
+  .ref.head{color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent-soft);background:var(--accent-soft)}
+  .ref.tag{color:var(--t3);background:var(--s3)}
+  .readonly{text-align:center;font-size:11px;color:var(--t3);letter-spacing:.2px;padding:16px 16px 8px}
+
+  /* ── diff ───────────────────────────────────────────────────── */
+  .statbar{display:flex;align-items:center;gap:8px;height:36px;padding:0 16px;flex:0 0 auto;
+           border-bottom:1px solid var(--bd);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--t2)}
+  .statbar .r{margin-left:auto;display:flex;gap:8px}
+  .statbar .add{color:var(--ok)} .statbar .del{color:var(--danger)}
+  .dfile{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;flex:0 0 auto;
+         background:var(--s2);border-bottom:1px solid var(--bd);
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--t1)}
+  .dfile .caret{color:var(--t3);font-size:10px;width:10px}
+  .dfile .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dfile .add{color:var(--ok);font-size:11px} .dfile .del{color:var(--danger);font-size:11px}
+  .hunk{display:flex;align-items:center;height:32px;padding:0 12px;background:var(--acc-soft);
+        font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--accent)}
+  .dline{display:flex;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:20px}
+  .dline .o,.dline .nn{width:28px;flex:0 0 28px;text-align:right;padding-right:6px;color:var(--t3);font-size:10px;line-height:20px}
+  .dline .sg{width:12px;flex:0 0 12px;color:var(--t3);line-height:20px}
+  .dline .cd{white-space:pre;padding-right:14px;color:var(--t2)}
+  .dline.add{box-shadow:inset 2px 0 0 var(--ok)}
+  .dline.add .cd,.dline.add .sg{color:var(--t1)}
+  .dline.del{box-shadow:inset 2px 0 0 var(--danger)}
+  .dline.del .cd,.dline.del .sg{color:var(--t3)}
+  .trunc{padding:12px 16px;font-size:11px;color:var(--warn);letter-spacing:.2px}
+
+  /* ── 本轮产物 ───────────────────────────────────────────────── */
+  .chghead{display:flex;align-items:center;gap:8px;height:40px;padding:0 16px;flex:0 0 auto;
+           border-bottom:1px solid var(--bd);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--t2)}
+  .chghead .r{margin-left:auto;display:flex;gap:8px}
+  .chghead .add{color:var(--ok)} .chghead .del{color:var(--danger)}
+  .chrow{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 16px;border-bottom:1px solid var(--bd)}
+  .chrow .op{width:14px;flex:0 0 14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+  .chrow .op.M{color:var(--warn)} .chrow .op.A{color:var(--ok)}
+  .chrow .op.D{color:var(--danger)} .chrow .op.R{color:var(--t2)}
+  .chrow .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--t1)}
+  .chrow .add{color:var(--ok);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+  .chrow .del{color:var(--danger);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+  .chfoot{padding:14px 16px}
+  .chfoot .ghost2{width:100%;height:40px;border-radius:10px;border:1px dashed var(--bd);background:transparent;
+                  color:var(--t2);font-size:13px}
+
+  /* ── 锁定提示条（P11：不是全屏锁）─────────────────────────── */
+  .lockbanner{display:flex;align-items:center;gap:10px;padding:8px 12px 8px 14px;flex:0 0 auto;
+              background:var(--danger-soft);box-shadow:inset 2px 0 0 var(--danger);min-height:36px}
+  .lockbanner .lk{color:var(--danger);font-size:13px;flex:0 0 auto}
+  .lockbanner .ct{flex:1;min-width:0}
+  .lockbanner .tt{font-size:12px;font-weight:600;color:var(--danger);line-height:16px}
+  .lockbanner .sb{font-size:11px;line-height:15px;color:var(--t2)}
+  .lockbanner .act{flex:0 0 auto;height:28px;padding:0 10px;border-radius:8px;border:1px solid var(--danger-bd);
+                   background:transparent;color:var(--danger);font-size:11px;font-weight:600}
+  /* 写操作统一变灰、不隐藏：隐藏会让用户以为功能不存在 */
+  .dim{opacity:.45;pointer-events:none}
+
+  /* ── 配对页（P12）──────────────────────────────────────────── */
+  .pairwrap{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;
+            padding:16px 24px calc(20px + var(--safe-b));overflow-y:auto}
+  .finder{position:relative;width:100%;max-width:300px;aspect-ratio:3/4;border-radius:20px;
+          border:1px solid var(--bd-strong);background:radial-gradient(circle at 50% 50%,var(--s2),var(--s1) 70%);
+          display:grid;place-items:center;overflow:hidden;box-shadow:inset 0 0 60px var(--acc-soft)}
+  .finder .ring2{position:absolute;border-radius:50%;border:1px solid var(--bd)}
+  .finder .ring2:nth-child(1){width:120px;height:120px}
+  .finder .ring2:nth-child(2){width:200px;height:200px;opacity:.7}
+  .finder .ring2:nth-child(3){width:280px;height:280px;opacity:.4}
+  .finder .sweep{position:absolute;width:280px;height:280px;border-radius:50%;
+    background:conic-gradient(from 0deg,transparent 0 300deg,var(--acc-soft) 340deg,transparent 360deg);
+    animation:spin 3s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .finder .hintc{position:relative;text-align:center;font-size:12px;line-height:18px;color:var(--t3)}
+  .finder .corner{position:absolute;width:22px;height:22px;border:2px solid var(--accent);opacity:.8}
+  .finder .c1{left:18px;top:18px;border-right:0;border-bottom:0;border-radius:6px 0 0 0}
+  .finder .c2{right:18px;top:18px;border-left:0;border-bottom:0;border-radius:0 6px 0 0}
+  .finder .c3{left:18px;bottom:18px;border-right:0;border-top:0;border-radius:0 0 0 6px}
+  .finder .c4{right:18px;bottom:18px;border-left:0;border-top:0;border-radius:0 0 6px 0}
+  .pairsteps{margin-top:20px;width:100%;max-width:300px}
+  .pairstep{display:flex;gap:10px;font-size:12.5px;line-height:18px;color:var(--t2);margin-bottom:8px}
+  .pairstep .i{flex:0 0 16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--accent)}
+  .pairalt{margin-top:auto;padding-top:18px;text-align:center;font-size:12.5px;color:var(--accent)}
+  .fp{margin-top:22px;text-align:center}
+  .fp .lbl{font-size:11px;letter-spacing:1.4px;color:var(--t3);text-transform:uppercase}
+  .fp .num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:34px;letter-spacing:8px;
+           color:var(--t1);margin:10px 0 6px}
+  .fp .tip{font-size:12px;color:var(--t2)}
+</style>
+</head>
+<body>
+<!-- 冷启动层：跑完自己移除，不参与后续布局 -->
+<div id="boot">
+  <div class="boot-stage">
+    <div class="boot-word mono">DSH LINK<i></i></div>
+    <div class="boot-emblem">
+      <span class="ring"></span><span class="ring"></span>
+      <span class="core"></span><span class="ping"></span>
+    </div>
+  </div>
+  <div class="boot-sweep"></div>
+  <div class="boot-line"><i></i></div>
+  <button class="boot-skip" id="bootSkip">SKIP</button>
+</div>
+
+<div class="app">
+
+  <!-- ============ RAIL (tablet) ============ -->
+  <aside class="rail">
+    <div class="rh">
+      <div class="brand"><span class="mark"><svg viewBox="0 0 24 24"><path d="M8 6l-4 6 4 6M16 6l4 6-4 6"/></svg></span>DSH Link</div>
+      <button class="iconbtn primary" style="margin-left:auto" title="添加电脑">
+        <svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+    <div class="banner" style="margin:6px 10px 10px">
+      <svg class="i sm" viewBox="0 0 24 24" style="color:var(--warn)"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.5 17.4A2 2 0 0 0 4.2 20.4h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      <span><b>2 个任务</b>在等你</span>
+      <svg class="i sm chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+    </div>
+    <div class="rscroll">
+      <div class="sect" style="padding:6px 10px 6px">设备</div>
+      <div class="dev on" data-dev="mac">
+        <span class="dot ok"></span>
+        <div style="min-width:0"><div class="nm">MacBook Pro</div><div class="mt">局域网 · 12ms · 3 会话</div></div>
+        <span class="c">14:20</span>
+      </div>
+      <div class="dev" data-dev="win">
+        <span class="dot run"></span>
+        <div style="min-width:0"><div class="nm">公司工作站</div><div class="mt">连接中…</div></div>
+      </div>
+      <div class="dev" data-dev="home">
+        <span class="dot off"></span>
+        <div style="min-width:0"><div class="nm">家里台式机</div><div class="mt">离线 · 2 小时前</div></div>
+      </div>
+
+      <div class="sect" style="padding:18px 10px 6px">MacBook Pro 的会话</div>
+      <div class="srow waiting" style="height:58px;padding:0 10px" data-go="chat">
+        <span class="dot warn"></span>
+        <div class="txt"><div class="t">重构 auth 模块</div><div class="d">等待批准：npm run build</div></div>
+      </div>
+      <div class="srow" style="height:54px;padding:0 10px" data-go="chat">
+        <span class="dot run"></span>
+        <div class="txt"><div class="t">修复登录态丢失</div><div class="d">正在运行测试</div></div>
+      </div>
+      <div class="srow" style="height:54px;padding:0 10px" data-go="chat">
+        <span class="dot off"></span>
+        <div class="txt"><div class="t">竞品分析报告</div><div class="d">已完成 · 昨天</div></div>
+      </div>
+    </div>
+    <div class="rfoot">
+      <button class="iconbtn on" data-tab="devices" title="设备"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button>
+      <button class="iconbtn" data-tab="files" title="文件"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></button>
+      <button class="iconbtn" data-tab="plugins" title="插件"><svg class="i" viewBox="0 0 24 24"><path d="M10 4a2 2 0 1 1 4 0v2h3a1 1 0 0 1 1 1v3h2a2 2 0 1 1 0 4h-2v3a1 1 0 0 1-1 1h-3v-2a2 2 0 1 0-4 0v2H7a1 1 0 0 1-1-1v-3H4a2 2 0 1 1 0-4h2V7a1 1 0 0 1 1-1h3Z"/></svg></button>
+      <button class="iconbtn" data-tab="settings" title="设置"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+
+    <!-- ---- P1 devices（终端卡：见 docs/08 §3.1）---- -->
+    <section class="screen on" id="s-devices">
+      <div class="head">
+        <div class="brand2">DSH<em>LINK</em></div>
+        <span class="vtag">v0.1.0</span>
+        <button class="iconbtn" title="刷新"><svg class="i sm" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
+      </div>
+      <div class="statline"><b>2</b> 台在线 <span class="sep">·</span> <b>3</b> 台已配对<span class="todo">2 项待处理</span></div>
+
+      <div class="scroll">
+        <div class="list" style="padding-top:2px">
+          <div class="sect">需要你 <span class="n">1</span><span class="line"></span></div>
+          <div class="term hot" data-go="sessions">
+            <div class="term-bar">
+              <span class="dot danger"></span>
+              <span class="name">Studio 工作站</span>
+              <span class="st d">LOCKED</span>
+            </div>
+            <div class="term-body">
+              <div class="term-title bad">这台电脑锁着</div>
+              <div class="term-meta">任务仍在跑，但写操作需要先解锁</div>
+              <div style="margin-top:10px"><button class="btn alert" data-sheet="sheetUnlock">请求解锁</button></div>
+            </div>
+          </div>
+
+          <div class="sect">我的电脑 <span class="n">2</span><span class="line"></span></div>
+          <div class="term" data-tab="sessions">
+            <div class="term-bar">
+              <span class="dot glow"></span>
+              <span class="name">MacBook Pro</span>
+              <span class="st r">12MS</span>
+            </div>
+            <div class="term-body">
+              <div class="term-line">darwin · 局域网 · 12ms</div>
+              <div class="term-use"><b>1 个运行中</b> · 共 3 个会话</div>
+            </div>
+          </div>
+
+          <div class="term off">
+            <div class="term-bar">
+              <span class="doff"></span>
+              <span class="name">Mac mini（家里）</span>
+              <span class="st o">OFFLINE</span>
+            </div>
+            <div class="term-body">
+              <div class="term-line">上次在线 3 小时前</div>
+              <div class="term-use" style="color:var(--t3)">0 个会话</div>
+            </div>
+          </div>
+
+          <div class="adder" id="addDevice"><span class="plus">＋</span>添加电脑<span class="hint">扫码配对 · 10 秒</span></div>
+          <div class="footline">数据不经过任何服务器 · 端到端加密</div>
+        </div>
+      </div>
+
+      <nav class="tabbar">
+        <button class="tab on" data-tab="devices"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>设备</button>
+        <button class="tab" data-tab="sessions"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3 1.2-4.2A8 8 0 1 1 21 12Z"/></svg>会话<span class="badgeN">2</span></button>
+        <button class="tab" data-tab="settings"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>我的</button>
+      </nav>
+    </section>
+
+    <!-- ---- P2 sessions（docs/08 §3.2：底部 Tab 2，跨设备聚合）---- -->
+    <section class="screen" id="s-sessions">
+      <div class="nav">
+        <h1>会话</h1>
+        <span class="right">3 台在线</span>
+      </div>
+      <div class="scroll">
+        <div class="list" style="padding-top:2px">
+          <div class="sect">等待你 <span class="n">2</span><span class="line"></span></div>
+          <div class="srow waiting" data-go="chat">
+            <span class="dot warn"></span>
+            <div class="txt"><div class="t">重构 auth 中间件</div><div class="d">等待批准：npm run build</div></div>
+            <div class="rt"><span class="dev">MacBook</span><span class="time">14:05</span></div>
+          </div>
+          <div class="srow waiting" data-go="chat">
+            <span class="dot warn"></span>
+            <div class="txt"><div class="t">数据库迁移方案</div><div class="d">等待回答：选哪种迁移方式</div></div>
+            <div class="rt"><span class="dev">Studio</span><span class="time">6 分钟前</span></div>
+          </div>
+
+          <div class="sect">进行中 <span class="n">1</span><span class="line"></span></div>
+          <div class="srow" data-go="chat">
+            <span class="wave"><i></i><i></i><i></i></span>
+            <div class="txt"><div class="t">修复登录态丢失 <span class="badge r">运行中</span></div><div class="d">正在运行 npm test · 第 3 轮</div></div>
+            <div class="rt"><span class="dev">MacBook</span><span class="time">14:02</span></div>
+          </div>
+
+          <div class="sect">最近完成 <span class="n">2</span><span class="line"></span></div>
+          <div class="srow" data-go="chat">
+            <span class="dot ok"></span>
+            <div class="txt"><div class="t">竞品分析报告</div><div class="d">已完成 · 3 个产物</div></div>
+            <div class="rt"><span class="dev">MacBook</span><span class="time">昨天</span></div>
+          </div>
+          <div class="srow" data-go="chat">
+            <span class="dot ok"></span>
+            <div class="txt"><div class="t">补齐 i18n 文案</div><div class="d">已完成 · 改了 18 个文件</div></div>
+            <div class="rt"><span class="dev">Mac mini</span><span class="time">周二</span></div>
+          </div>
+          <div class="srow">
+            <span class="doff"></span>
+            <div class="txt"><div class="t" style="color:var(--t2)">升级 dsh 插件依赖</div><div class="d">已中断</div></div>
+            <div class="rt"><span class="dev">Mac mini</span><span class="time">周一</span></div>
+          </div>
+        </div>
+      </div>
+      <nav class="tabbar">
+        <button class="tab" data-tab="devices"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>设备</button>
+        <button class="tab on" data-tab="sessions"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3 1.2-4.2A8 8 0 1 1 21 12Z"/></svg>会话<span class="badgeN">2</span></button>
+        <button class="tab" data-tab="settings"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>我的</button>
+      </nav>
+    </section>
+
+    <!-- ---- P3 chat（对话段：docs/08 §3.3）---- -->
+    <section class="screen" id="s-chat">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>重构 auth 中间件<span class="sub">MacBook Pro · 运行中 · 12ms</span></h1>
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg></button>
+      </div>
+      <div class="segs">
+        <button class="seg on" data-seg="chat">对话</button>
+        <button class="seg" data-seg="trace">执行过程</button>
+        <button class="seg" data-seg="changes">产物<span class="n">3</span></button>
+      </div>
+
+      <div class="chat-wrap">
+        <div class="chat-col">
+        <div class="chat" id="chatScroll">
+          <div class="daystamp">昨天 21:40</div>
+
+          <div class="msg">
+            <div class="who" style="justify-content:flex-end">你</div>
+            <div class="bubble">登录态偶尔丢，帮我看看是不是 cookie 的锅。</div>
+          </div>
+
+          <div class="msg">
+            <div class="assist bar">先把 auth 这条链路的入口都看一遍，再决定改哪一层。</div>
+            <div class="act"><span class="ico"><svg class="i sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span><span class="t">搜索 <b>session</b> / <b>cookie</b> 在 src/</span><span class="dur">0.9s</span></div>
+            <div class="act"><span class="ico done"><svg class="i sm" viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></svg></span><span class="t">阅读 <b>src/auth/session.ts</b></span><span class="dur">0.4s</span></div>
+            <div class="assist bar" style="margin-top:8px">问题在 <span class="mono" style="font-size:13px;color:var(--t1)">cookie.ts</span>：刷新时只重写了 cookie，没有配套的 device token。要不要明天一起改？</div>
+          </div>
+
+          <div class="msg">
+            <div class="who" style="justify-content:flex-end">你</div>
+            <div class="bubble">好，先记着，明天做。</div>
+          </div>
+
+          <div class="daystamp">今天 14:02</div>
+
+          <div class="msg">
+            <div class="who" style="justify-content:flex-end">你</div>
+            <div class="bubble">把 auth 中间件里的 cookie 换成 device token，测试要同步改。</div>
+          </div>
+
+          <div class="msg">
+            <div class="assist bar">我先看一下现有的中间件和 session 存储，再决定改动范围。</div>
+            <div class="act"><span class="ico"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="t">阅读 <b>src/auth/middleware.ts</b></span><span class="dur">0.7s</span></div>
+            <div class="act"><span class="ico done"><svg class="i sm" viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></svg></span><span class="t">修改 <b>src/auth/middleware.ts</b></span><span class="dur">+42 −8</span></div>
+            <div class="act"><span class="ico done"><svg class="i sm" viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></svg></span><span class="t">测试 <b>12 passed</b></span><span class="dur">8.3s</span></div>
+            <div class="assist bar" id="lastAssist" style="margin-top:10px">中间件已改好，refresh 走 httpOnly Cookie。需要你确认构建参数。<span class="cursor"></span></div>
+          </div>
+
+          <div class="approve high" id="approveCard">
+            <div class="hd">
+              <svg class="i sm" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.5 17.4A2 2 0 0 0 4.2 20.4h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+              高风险操作 · 等待你批准
+            </div>
+            <div class="cmd">$ npm run build
+&gt; tsc &amp;&amp; vite build --mode production</div>
+            <div class="risk">
+              <svg class="i sm" viewBox="0 0 24 24" style="color:#FF9A8F;flex:0 0 auto;margin-top:1px"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>
+              <span>会覆盖 <span class="mono" style="color:var(--t1)">dist/</span> 下 3 个产物（+1.2MB），使用你当前用户权限运行</span>
+            </div>
+            <div class="btns">
+              <button class="btn ghostbtn" id="rejectBtn">拒绝</button>
+              <button class="btn primary" id="approveBtn">批准</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 队列收起条：队列空时整条消失（本次由 JS 控制显隐） -->
+        <div class="qbar" id="qbarCollapsed" data-seg="queue">
+          <span class="plus">⊕</span><b>3 QUEUED</b><span class="pv">· 下一条「把测试也跑一遍」</span><span class="chev">▴</span>
+        </div>
+
+        <div class="composer">
+          <button class="iconbtn" id="uploadBtn" title="附件">
+            <svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <div class="field">
+            <input id="msgInput" placeholder="继续输入…" autocomplete="off">
+            <button class="send" id="sendBtn" disabled>
+              <svg class="i sm" viewBox="0 0 24 24" style="stroke-width:2.2"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+            </button>
+          </div>
+        </div>
+        </div><!-- /.chat-col -->
+
+        <!-- 平板横屏（≥1100）才出现：对话与执行过程同时可见。
+             内容由 JS 从 #s-trace 克隆而来，不在这里复制一份 markup——
+             复制粘贴的下一步一定是改了一处忘了另一处。 -->
+        <aside class="side" id="chatSide">
+          <div class="sh">执行过程 <span class="live">LIVE</span><span class="cnt">39 步</span></div>
+          <div class="sb" id="chatSideBody"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ---- P3 trace（执行过程段：docs/08 §3.5）---- -->
+    <section class="screen" id="s-trace">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>重构 auth 中间件<span class="sub">MacBook Pro · 运行中 · 12ms</span></h1>
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg></button>
+      </div>
+      <div class="segs">
+        <button class="seg" data-seg="chat">对话</button>
+        <button class="seg on" data-seg="trace">执行过程</button>
+        <button class="seg" data-seg="changes">产物<span class="n">3</span></button>
+      </div>
+      <div class="filterbar">只显示关键步骤
+        <svg class="i sm gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+      </div>
+
+      <div class="scroll">
+        <div class="tl">
+          <div class="trow">
+            <span class="ico m">–</span>
+            <div class="h"><div class="tx dim">读了 3 个文件</div><span class="du">1.2s</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico">◌</span>
+            <div class="h"><div class="tx dim">思考</div><span class="du">2.4s</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a" style="font-size:11px">&gt;</span>
+            <div class="h"><div class="tx"><code>npm run build</code></div><span class="du">18s</span></div>
+            <div class="sub">退出码 0 · 点开看完整输出</div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a">▤</span>
+            <div class="h"><div class="tx">改 <code>src/auth/middleware.ts</code></div>
+              <span class="add">+42</span><span class="del">−8</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a">▤</span>
+            <div class="h"><div class="tx">改 <code>src/auth/cookie.ts</code></div>
+              <span class="add">+7</span><span class="del">−3</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a">◇</span>
+            <div class="h"><div class="tx">read_file <code>src/auth/session.ts</code></div><span class="du">0.4s</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a">▤</span>
+            <div class="h"><div class="tx">改 <code>src/auth/session.ts</code></div>
+              <span class="add">+5</span><span class="del">−1</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico">◌</span>
+            <div class="h"><div class="tx dim">思考</div><span class="du">1.8s</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a" style="font-size:11px">&gt;</span>
+            <div class="h"><div class="tx"><code>npm test -- auth</code></div><span class="du">6.1s</span></div>
+            <div class="sub">退出码 1 · 2 个用例失败</div>
+          </div>
+
+          <div class="trow bad">
+            <span class="ico d">✕</span>
+            <div class="h"><div class="tx">test <code>tests/auth.test.ts</code> 失败</div><span class="du">6.1s</span></div>
+            <div class="sub">2 failed · expected 401, got 200</div>
+          </div>
+
+          <div class="trow appr">
+            <span class="ico w">⚠</span>
+            <div class="h"><div class="tx">等待批准：<code>rm -rf dist</code></div><button class="act">查看</button></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico m">▎</span>
+            <div class="tx" style="white-space:normal;color:var(--t2)">测试失败是因为旧 cookie 分支还在，我先补上兼容判断再跑一遍。</div>
+          </div>
+
+          <div class="tgroup">还有 37 步 ▾</div>
+        </div>
+
+        <button class="newjump">↓ 3 个新步骤</button>
+      </div>
+
+      <div class="qbar" data-seg="queue">
+        <span class="plus">⊕</span><b>3 QUEUED</b><span class="pv">· 下一条「把测试也跑一遍」</span><span class="chev">▴</span>
+      </div>
+      <div class="composer">
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+        <div class="field"><input placeholder="继续输入…" autocomplete="off">
+          <button class="send"><svg class="i sm" viewBox="0 0 24 24" style="stroke-width:2.2"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- P3 changes（产物段：docs/08 §3.3）---- -->
+    <section class="screen" id="s-changes">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>重构 auth 中间件<span class="sub">MacBook Pro · 运行中 · 12ms</span></h1>
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg></button>
+      </div>
+      <div class="segs">
+        <button class="seg" data-seg="chat">对话</button>
+        <button class="seg" data-seg="trace">执行过程</button>
+        <button class="seg on" data-seg="changes">产物<span class="n">3</span></button>
+      </div>
+
+      <div class="scroll">
+        <div class="chghead">本轮改动 3 个文件
+          <span class="r"><span class="add">+57</span><span class="del">−14</span></span>
+        </div>
+        <div class="chrow" data-go="file">
+          <span class="op M">M</span><span class="p">src/auth/middleware.ts</span>
+          <span class="add">+42</span><span class="del">−8</span>
+        </div>
+        <div class="chrow" data-go="file">
+          <span class="op M">M</span><span class="p">src/auth/cookie.ts</span>
+          <span class="add">+7</span><span class="del">−3</span>
+        </div>
+        <div class="chrow" data-go="file">
+          <span class="op A">A</span><span class="p">tests/auth.test.ts</span>
+          <span class="add">+8</span><span class="del">−3</span>
+        </div>
+        <div class="chfoot">
+          <button class="ghost2" data-go="diff">查看完整 diff →</button>
+          <button class="ghost2" data-go="files" style="margin-top:8px">浏览工作区</button>
+        </div>
+        <div class="readonly">产物列表来自本轮 trace，不是 git 状态</div>
+      </div>
+
+      <div class="composer">
+        <div class="field"><input placeholder="继续输入…" autocomplete="off">
+          <button class="send"><svg class="i sm" viewBox="0 0 24 24" style="stroke-width:2.2"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- P4 queue（展开态：docs/08 §3.4）---- -->
+    <section class="screen" id="s-queue">
+      <div class="nav sm">
+        <button class="iconbtn" data-seg="chat"><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>重构 auth 中间件<span class="sub">MacBook Pro · 运行中 · 12ms</span></h1>
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg></button>
+      </div>
+      <div class="segs">
+        <button class="seg" data-seg="chat">对话</button>
+        <button class="seg" data-seg="trace">执行过程</button>
+        <button class="seg" data-seg="changes">产物<span class="n">3</span></button>
+      </div>
+
+      <div class="scroll" style="padding-bottom:6px">
+        <div style="padding:0 16px">
+          <div class="daystamp">今天 14:02</div>
+          <div class="msg">
+            <div class="who" style="justify-content:flex-end">你</div>
+            <div class="bubble">把 auth 中间件里的 cookie 换成 device token，测试要同步改。</div>
+          </div>
+          <div class="msg">
+            <div class="assist bar">中间件已改好，正在跑测试队列。<span class="cursor"></span></div>
+            <div class="act"><span class="ico done"><svg class="i sm" viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></svg></span><span class="t">修改 <b>src/auth/middleware.ts</b></span><span class="dur">+42 −8</span></div>
+            <div class="act"><span class="ico"><svg class="i sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="t">运行 <b>npm test</b></span><span class="dur">进行中</span></div>
+          </div>
+          <div class="msg" style="margin-bottom:4px">
+            <div class="who" style="justify-content:flex-end">你</div>
+            <div class="bubble">把测试也跑一遍</div>
+            <div style="text-align:right;font-size:11px;color:var(--warn);margin-top:5px">忙 · 已加入队列</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="qpanel">
+        <div class="qh">队列 3 条<span class="n">下一轮会自动发</span><span class="fold" data-seg="chat">▾ 收起</span></div>
+        <div class="qitem sending">
+          <span class="idx">1</span><span class="grip">⠿</span>
+          <div class="txwrap"><div class="tx">把测试也跑一遍</div></div>
+          <span class="du mono" style="font-size:10px;color:var(--t3);align-self:center">发送中</span>
+        </div>
+        <div class="qitem">
+          <span class="idx">2</span><span class="grip">⠿</span>
+          <div class="txwrap"><div class="tx">顺便把 README 的认证章节更新一下</div></div>
+          <button class="x">×</button>
+        </div>
+        <div class="qitem">
+          <span class="idx">3</span><span class="grip">⠿</span>
+          <div class="txwrap"><div class="tx">提交前帮我看下 diff</div></div>
+          <button class="x">×</button>
+        </div>
+        <div class="qitem failed">
+          <span class="idx">4</span><span class="grip">⠿</span>
+          <div class="txwrap">
+            <div class="tx">生成变更日志</div>
+            <div class="why">上一条失败：上下文超限<span class="rs">重发</span></div>
+          </div>
+          <button class="x">×</button>
+        </div>
+        <div class="qfull">队列上限 20 条 · 由电脑侧配置，手机只读</div>
+      </div>
+
+      <div class="composer">
+        <div class="field"><input placeholder="继续输入…（忙时会自动排队）" autocomplete="off">
+          <button class="send"><svg class="i sm" viewBox="0 0 24 24" style="stroke-width:2.2"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- P5 files（文件浏览：docs/08 §3.6）---- -->
+    <section class="screen" id="s-files">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>app</h1>
+        <button class="iconbtn" id="uploadBtn2" title="上传"><svg class="i" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></button>
+        <button class="iconbtn" data-go="repo" title="仓库"><svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4v0"/></svg></button>
+      </div>
+      <div class="crumb">
+        <span>workspace</span><span class="sp">/</span>
+        <span>app</span><span class="sp">/</span>
+        <span>src</span><span class="sp">/</span>
+        <span class="last">auth</span>
+      </div>
+
+      <div class="ftree">
+        <div class="f2 dir"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></span><span class="nm">..</span></div>
+        <div class="f2 dir"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></span><span class="nm">handlers</span><span class="go">›</span></div>
+        <div class="f2 file" data-go="file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">middleware.ts</span><span class="sz">2.1 KB</span><span class="gs M">M</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">cookie.ts</span><span class="sz">1.8 KB</span><span class="gs M">M</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">rotate.ts</span><span class="sz">3.4 KB</span><span class="gs A">A</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">session.ts</span><span class="sz">4.2 KB</span><span class="gs c">✓</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">hmac.ts</span><span class="sz">1.1 KB</span><span class="gs c">✓</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">token.ts</span><span class="sz">2.8 KB</span><span class="gs c">✓</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">errors.ts</span><span class="sz">640 B</span><span class="gs c">✓</span></div>
+        <div class="f2 file"><span class="fi"><span class="thumb"></span></span><span class="nm">logo.png</span><span class="sz">18 KB</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">package.json</span><span class="sz">2.1 KB</span><span class="gs c">✓</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">notes.md</span><span class="sz">412 B</span><span class="gs q">?</span></div>
+        <div class="f2 file"><span class="fi"><svg class="i sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><span class="nm">tsconfig.json</span><span class="sz">812 B</span><span class="gs c">✓</span></div>
+      </div>
+
+      <div class="upsect">
+        <div class="hd">本地上传（2）</div>
+        <div class="uprow"><span class="ring"></span><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB · 68%</span></div>
+        <div class="uprow"><span class="done">✓</span><span class="nm">需求.docx</span><span class="sz">124 KB · 已上传</span></div>
+      </div>
+    </section>
+
+    <!-- ---- P6 file view（文件预览：docs/08 §3.7）---- -->
+    <section class="screen" id="s-file">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1 class="mono" style="font-size:15px">middleware.ts<span class="sub">src/auth · 3.4 KB · 3120 行</span></h1>
+        <span class="add mono" style="font-size:11px">+42</span><span class="del mono" style="font-size:11px">−8</span>
+      </div>
+
+      <div class="code">
+        <div class="cl"><span class="ln">36</span><span class="cd"><span class="k">import</span> { signed } <span class="k">from</span> <span class="s">'./hmac'</span></span></div>
+        <div class="cl"><span class="ln">37</span><span class="cd"><span class="k">import</span> type { Request } <span class="k">from</span> <span class="s">'express'</span></span></div>
+        <div class="cl"><span class="ln">38</span><span class="cd"></span></div>
+        <div class="cl"><span class="ln">39</span><span class="cd"><span class="c">// 60s 时钟偏移容差</span></span></div>
+        <div class="cl"><span class="ln">40</span><span class="cd"><span class="k">export async function</span> <span class="nm2">auth</span>(req) {</span></div>
+        <div class="cl"><span class="ln">41</span><span class="cd">  <span class="k">const</span> t = req.headers[<span class="s">'device-token'</span>]</span></div>
+        <div class="cl del"><span class="ln">42</span><span class="cd">  <span class="k">if</span> (!t) <span class="k">return</span> cookieFallback(req)</span></div>
+        <div class="cl add"><span class="ln">42</span><span class="cd">  <span class="k">if</span> (!t) <span class="k">return</span> signed(req, { skew: <span class="nm2">60</span> })</span></div>
+        <div class="cl add"><span class="ln">43</span><span class="cd">  <span class="c">// 旧 cookie 分支留着，灰度完再删</span></span></div>
+        <div class="cl"><span class="ln">44</span><span class="cd">  <span class="k">return</span> verify(t, TTL)</span></div>
+        <div class="cl"><span class="ln">45</span><span class="cd">}</span></div>
+        <div class="cl"><span class="ln">46</span><span class="cd"></span></div>
+        <div class="cl"><span class="ln">47</span><span class="cd"><span class="k">function</span> <span class="nm2">cookieFallback</span>(req) {</span></div>
+        <div class="cl"><span class="ln">48</span><span class="cd">  <span class="k">const</span> c = req.headers.cookie</span></div>
+        <div class="cl"><span class="ln">49</span><span class="cd">  <span class="k">return</span> c ? parse(c) : <span class="k">null</span></span></div>
+        <div class="cl"><span class="ln">50</span><span class="cd">}</span></div>
+        <div class="cl"><span class="ln">51</span><span class="cd"></span></div>
+        <div class="cl"><span class="ln">52</span><span class="cd"><span class="k">export const</span> TTL = <span class="nm2">3600</span></span></div>
+        <div class="cl"><span class="ln">53</span><span class="cd"></span></div>
+        <div class="cl"><span class="ln">54</span><span class="cd"><span class="k">function</span> <span class="nm2">parse</span>(raw: string) {</span></div>
+        <div class="cl"><span class="ln">55</span><span class="cd">  <span class="k">const</span> out: Record&lt;string, string&gt; = {}</span></div>
+        <div class="cl"><span class="ln">56</span><span class="cd">  <span class="k">for</span> (<span class="k">const</span> kv <span class="k">of</span> raw.split(<span class="s">'; '</span>)) {</span></div>
+        <div class="cl"><span class="ln">57</span><span class="cd">    <span class="k">const</span> [k, v] = kv.split(<span class="s">'='</span>)</span></div>
+        <div class="cl"><span class="ln">58</span><span class="cd">    <span class="k">if</span> (k) out[k.trim()] = v</span></div>
+        <div class="cl"><span class="ln">59</span><span class="cd">  }</span></div>
+        <div class="cl"><span class="ln">60</span><span class="cd">  <span class="k">return</span> out</span></div>
+        <div class="cl"><span class="ln">61</span><span class="cd">}</span></div>
+        <div class="cl"><span class="ln">62</span><span class="cd"></span></div>
+        <div class="cl"><span class="ln">63</span><span class="cd"><span class="k">export async function</span> <span class="nm2">rotate</span>(req) {</span></div>
+        <div class="cl"><span class="ln">64</span><span class="cd">  <span class="k">return</span> refresh(req, TTL)</span></div>
+        <div class="cl"><span class="ln">65</span><span class="cd">}</span></div>
+      </div>
+
+      <div class="loadmore">
+        <div class="t">已加载 200 / 3120 行</div>
+        <button class="b">继续加载</button>
+      </div>
+
+      <!-- mode=image 时才显示。图片要"等比适配宽度、最大高 60vh、点按全屏"，
+           所以这里不画行号、不分页，只把整张图当作一个可缩放的整体。 -->
+      <div class="imgview">
+        <div class="frame">
+          <!-- 原型没有真实照片，用一张抽象风景代替：它要说明的是"图片被等比放进来了"，
+               不是"这张照片好看"。硬编码一张 JPEG 会让仓库多 3MB，且与设计无关。 -->
+          <svg viewBox="0 0 302 403" role="img" aria-label="示例照片：逆光的山脊">
+            <defs>
+              <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#1b2a3a"/><stop offset=".42" stop-color="#3c4a56"/>
+                <stop offset=".68" stop-color="#8a6a52"/><stop offset="1" stop-color="#241c18"/>
+              </linearGradient>
+              <radialGradient id="sun" cx=".5" cy=".5" r=".5">
+                <stop offset="0" stop-color="#ffd9a0" stop-opacity=".95"/>
+                <stop offset=".55" stop-color="#f5a524" stop-opacity=".35"/>
+                <stop offset="1" stop-color="#f5a524" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+            <rect width="302" height="403" fill="url(#sky)"/>
+            <circle cx="212" cy="176" r="86" fill="url(#sun)"/>
+            <circle cx="212" cy="176" r="17" fill="#ffe3b8" opacity=".9"/>
+            <path d="M0 262 L58 214 L96 246 L146 190 L204 258 L242 232 L302 276 V403 H0 Z"
+                  fill="#14181c" opacity=".92"/>
+            <path d="M0 300 L46 272 L104 306 L168 268 L226 312 L268 288 L302 316 V403 H0 Z"
+                  fill="#0b0e10"/>
+          </svg>
+        </div>
+        <div class="meta">
+          <span>3024 × 4032</span><i></i><span>2.8 MB</span><i></i><span>JPEG</span>
+        </div>
+        <div class="hint">点按全屏 · 双指缩放</div>
+      </div>
+    </section>
+
+    <!-- ---- P7 repo（仓库视图：docs/08 §3.8）---- -->
+    <section class="screen" id="s-repo">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>仓库<span class="sub">app · ~/code/dsh-app</span></h1>
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
+      </div>
+
+      <div class="repohead">
+        <span class="br"><svg class="i sm" viewBox="0 0 24 24" style="width:12px;height:12px"><circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="7" r="2"/><path d="M7 7v10M9 5h4a4 4 0 0 1 4 4v0"/></svg>main</span>
+        <span class="ab"><span class="ahead">↑2</span><span class="behind">↓0</span></span>
+        <span class="dirty">● 3 个改动</span>
+      </div>
+
+      <div class="scroll" style="padding-bottom:12px">
+        <div class="list" style="padding-top:0">
+          <div class="sect">已暂存 <span class="n">1</span><span class="line"></span></div>
+          <div class="chrow"><span class="op M">M</span><span class="p">src/auth/middleware.ts</span><span class="add">+12</span><span class="del">−3</span></div>
+
+          <div class="sect">未暂存 <span class="n">2</span><span class="line"></span></div>
+          <div class="chrow"><span class="op M">M</span><span class="p">src/auth/cookie.ts</span><span class="add">+7</span><span class="del">−3</span></div>
+          <div class="chrow"><span class="op A">A</span><span class="p">src/auth/rotate.ts</span><span class="add">+88</span><span class="del">−0</span></div>
+
+          <div class="sect">未跟踪 <span class="n">1</span><span class="line"></span></div>
+          <div class="chrow"><span class="op" style="color:var(--t3)">?</span><span class="p">notes.md</span></div>
+
+          <div class="sect">提交历史 <span class="line"></span><span class="n" style="color:var(--accent)">看全部</span></div>
+          <div class="commit" data-go="diff">
+            <div class="sj"><span class="ref head">HEAD</span>修复登录态丢失</div>
+            <div class="mt"><span>a1b2c3d</span><span>·</span><span>你</span><span>·</span><span>2 小时前</span></div>
+          </div>
+          <div class="commit" data-go="diff">
+            <div class="sj">重构 auth 模块</div>
+            <div class="mt"><span>9f8e7d6</span><span>·</span><span>你</span><span>·</span><span>昨天</span></div>
+          </div>
+          <div class="commit">
+            <div class="sj"><span class="ref tag">v0.3.0</span>补齐 i18n 文案</div>
+            <div class="mt"><span>4c5d6e7</span><span>·</span><span>你</span><span>·</span><span>周二</span></div>
+          </div>
+          <div class="commit">
+            <div class="sj">升级 dsh 插件依赖</div>
+            <div class="mt"><span>2b7c9a1</span><span>·</span><span>你</span><span>·</span><span>上周五</span></div>
+          </div>
+          <div class="commit">
+            <div class="sj">初始化工程骨架</div>
+            <div class="mt"><span>7e1f0b3</span><span>·</span><span>你</span><span>·</span><span>上周三</span></div>
+          </div>
+          <div class="readonly">只读 · 提交与推送请在电脑上操作</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- P8 diff（提交详情：docs/08 §3.9）---- -->
+    <section class="screen" id="s-diff">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1 class="mono" style="font-size:15px">a1b2c3d<span class="sub">修复登录态丢失 · 你 · 2 小时前</span></h1>
+        <button class="iconbtn" title="分享"><svg class="i" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/></svg></button>
+      </div>
+
+      <div class="statbar">3 个文件
+        <span class="r"><span class="add">+57</span><span class="del">−14</span></span>
+      </div>
+
+      <div class="scroll" style="padding-bottom:16px">
+        <div class="dfile"><span class="caret">▾</span><span class="p">src/auth/middleware.ts</span><span class="add">+42</span><span class="del">−8</span></div>
+        <div class="hunk">@@ -38,7 +38,9 @@</div>
+        <div class="dline"><span class="o">38</span><span class="nn">38</span><span class="sg"></span><span class="cd">  const t = req.headers[<span class="s">'device-token'</span>]</span></div>
+        <div class="dline del"><span class="o">39</span><span class="nn"></span><span class="sg">-</span><span class="cd">  return cookie(t)</span></div>
+        <div class="dline add"><span class="o"></span><span class="nn">39</span><span class="sg">+</span><span class="cd">  return signed(t, { skew: 60 })</span></div>
+        <div class="dline add"><span class="o"></span><span class="nn">40</span><span class="sg">+</span><span class="cd">  // 60s 时钟偏移容差</span></div>
+        <div class="dline"><span class="o">40</span><span class="nn">41</span><span class="sg"></span><span class="cd">}</span></div>
+        <div class="hunk">@@ -52,4 +54,6 @@</div>
+        <div class="dline"><span class="o">52</span><span class="nn">54</span><span class="sg"></span><span class="cd">function cookieFallback(req) {</span></div>
+        <div class="dline add"><span class="o"></span><span class="nn">55</span><span class="sg">+</span><span class="cd">  // TODO: 灰度结束后删除</span></div>
+        <div class="dline add"><span class="o"></span><span class="nn">56</span><span class="sg">+</span><span class="cd">  log('cookie-fallback')</span></div>
+        <div class="dline"><span class="o">53</span><span class="nn">57</span><span class="sg"></span><span class="cd">}</span></div>
+
+        <div class="dfile" style="margin-top:8px"><span class="caret">▾</span><span class="p">src/auth/cookie.ts</span><span class="add">+7</span><span class="del">−3</span></div>
+        <div class="hunk">@@ -12,6 +12,10 @@</div>
+        <div class="dline"><span class="o">12</span><span class="nn">12</span><span class="sg"></span><span class="cd">  const ttl = opts.ttl ?? TTL</span></div>
+        <div class="dline del"><span class="o">13</span><span class="nn"></span><span class="sg">-</span><span class="cd">  res.setHeader('set-cookie', c)</span></div>
+        <div class="dline add"><span class="o"></span><span class="nn">13</span><span class="sg">+</span><span class="cd">  res.setHeader('set-cookie', [c])</span></div>
+        <div class="dline add"><span class="o"></span><span class="nn">14</span><span class="sg">+</span><span class="cd">  res.setHeader('x-token-t', ttl)</span></div>
+        <div class="dline"><span class="o">14</span><span class="nn">15</span><span class="sg"></span><span class="cd">}</span></div>
+
+        <div class="dfile"><span class="caret">▸</span><span class="p">tests/auth.test.ts</span><span class="add">+8</span><span class="del">−3</span></div>
+        <div class="trunc">还有 12 个改动块未显示</div>
+        <div class="readonly">diff 由电脑侧生成 · 手机只看不改</div>
+      </div>
+    </section>
+
+    <!-- ---- plugins ---- -->
+    <section class="screen" id="s-plugins">
+      <div class="nav">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>插件<span class="sub">MacBook Pro · 需要完全控制权限</span></h1>
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+      </div>
+      <div class="warnbar">
+        <svg class="i sm" viewBox="0 0 24 24" style="flex:0 0 auto;margin-top:1px"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.5 17.4A2 2 0 0 0 4.2 20.4h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <div>远程安装会以你的用户权限执行代码。<br>仅安装你信任的包。</div>
+      </div>
+      <div class="scroll">
+        <div class="list">
+          <div class="sect">已安装 <span class="n">3</span><span class="line"></span></div>
+          <div class="pcard">
+            <div class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg></div>
+            <div class="body">
+              <div class="nm">dsh-pocket <span class="ver">2.12.0</span></div>
+              <div class="ds">手机访问 · npm registry</div>
+            </div>
+            <button class="switch on" data-switch></button>
+          </div>
+          <div class="pcard">
+            <div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg></div>
+            <div class="body">
+              <div class="nm">dsh-bridge <span class="ver">2.15.0</span></div>
+              <div class="ds">多端协同 · link:/work/dsh-bridge</div>
+            </div>
+            <button class="switch on" data-switch></button>
+          </div>
+          <div class="pcard">
+            <div class="ic"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></div>
+            <div class="body">
+              <div class="nm">dsh-mobile <span class="ver">0.6.16</span></div>
+              <div class="ds">移动端原生体验 · 需重启生效</div>
+            </div>
+            <button class="switch" data-switch></button>
+          </div>
+
+          <div class="sect">可安装 <span class="line"></span></div>
+          <div class="pcard">
+            <div class="ic" style="color:#C4B5FD"><svg class="i" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 21h16"/></svg></div>
+            <div class="body">
+              <div class="nm">@dsh-remote/plugin <span class="ver">3.2.12</span></div>
+              <div class="ds">云端中继 · 端到端加密 · official</div>
+            </div>
+            <button class="minibtn">安装</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- P10 settings（docs/08 §3.11）---- -->
+    <section class="screen" id="s-settings">
+      <div class="nav"><h1>我的</h1></div>
+      <div class="scroll">
+        <div class="list" style="padding-top:4px">
+          <div class="term" style="cursor:default;margin-bottom:14px">
+            <div class="term-body" style="display:flex;gap:12px;align-items:center;padding:13px 14px">
+              <div style="width:42px;height:42px;border-radius:12px;background:linear-gradient(140deg,var(--accent),var(--s3));display:grid;place-items:center;font-weight:600;color:var(--bg);flex:0 0 42px">Y</div>
+              <div style="flex:1;min-width:0">
+                <div class="term-title">我的 iPhone</div>
+                <div class="term-line" style="margin-top:2px">已配对 3 台电脑 · Face ID 已开启</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sect">外观 <span class="line"></span></div>
+          <div class="setgroup">
+            <div class="setrow" style="flex-wrap:wrap;gap:10px">
+              <span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M12 3a7 7 0 0 0 0 14 9 9 0 0 0 0-14Z"/></svg></span>
+              <div class="lbl">皮肤<small>自动：锁定与危险确认切 550W，其余 MOSS</small></div>
+              <div class="skinpick" id="skinPick">
+                <button class="pill on" data-skinpick="auto">自动</button>
+                <button class="pill" data-skinpick="moss">MOSS</button>
+                <button class="pill" data-skinpick="550w">550W</button>
+                <button class="pill" data-lightpick="1">浅色</button>
+              </div>
+            </div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg></span><div class="lbl">浅色模式<small>关掉扫描线与发光</small></div><button class="switch" data-switch></button></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 17V9l4-4 4 4v8M14 17V7l4-3 2 3v10"/></svg></span><div class="lbl">省电渲染<small>低端机自动开</small></div><button class="switch on" data-switch></button></div>
+          </div>
+
+          <div class="sect">会话 <span class="line"></span></div>
+          <div class="setgroup">
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg></span><div class="lbl">执行过程详细度<small>对应执行过程段的筛选</small></div><span class="val">关键步骤</span><svg class="i sm chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="1.6"/><circle cx="16" cy="12" r="1.6"/></svg></span><div class="lbl">队列上限<small>由电脑侧配置决定，手机只读</small></div><span class="val mono">20</span></div>
+          </div>
+
+          <div class="sect">文件 <span class="line"></span></div>
+          <div class="setgroup">
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/></svg></span><div class="lbl">默认打开方式<small>Markdown 用</small></div><span class="val">预览</span><svg class="i sm chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4v0"/></svg></span><div class="lbl">GitHub 浏览<small>需要在电脑上配置令牌</small></div><span class="val" style="color:var(--t3)">未开启</span></div>
+          </div>
+
+          <div class="sect">安全 <span class="line"></span></div>
+          <div class="setgroup">
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><div class="lbl">访问密码<small>新设备配对时需要</small></div><span class="val">已设置</span><svg class="i sm chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M12 11c2 0 4 1 4 4 0 2-1.4 3-4 3s-4-1-4-3c0-3 2-4 4-4Z"/><path d="M12 3v3M4 8l2 2M20 8l-2 2"/></svg></span><div class="lbl">生物识别解锁</div><button class="switch on" data-switch></button></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span><div class="lbl">安全日志<small>谁在何时批准了什么</small></div><span class="val">128 条</span><svg class="i sm chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></div>
+            <div class="setrow"><span class="ic" style="color:var(--danger)"><svg class="i" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg></span><div class="lbl" style="color:var(--danger)">已配对设备</div><span class="val">3 台</span><svg class="i sm chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></div>
+          </div>
+
+          <div class="sect">锁定（dsh 侧） <span class="line"></span></div>
+          <div class="setgroup">
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><div class="lbl">立即锁定<small>锁 dsh 的操作能力，不暂停任务</small></div><button class="btn-mini" data-go="lock">锁定</button></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><div class="lbl">空闲自动锁</div><span class="val">10 分钟</span></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 1 2.3 5.6"/><path d="M4 18v-6h6"/></svg></span><div class="lbl">无操作转只读<small>能看不能动</small></div><span class="val">8 小时</span></div>
+            <div class="setrow"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></span><div class="lbl">锁定策略<small>真正的开关在电脑上，手机不能改</small></div><span class="val" style="color:var(--t3)">dsh 侧</span></div>
+          </div>
+
+          <div class="honest">
+            锁定挡的是<b>操作</b>，不是进程。dsh 界面停在锁定页、任何入口都发不出指令，
+            但 <b>agent 会继续跑完</b>，手机这端仍能看执行过程（正文被裁剪）。
+            它<b>不锁操作系统</b>——想锁电脑请按 <span class="mono">Win+L</span> / <span class="mono">⌃⌘Q</span>。
+          </div>
+          <div style="text-align:center;color:var(--t3);font-size:11px;padding:16px 0 28px">DSH Link 0.1.0 · 协议 v1</div>
+        </div>
+      </div>
+      <nav class="tabbar">
+        <button class="tab" data-tab="devices"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>设备</button>
+        <button class="tab" data-tab="sessions"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3 1.2-4.2A8 8 0 1 1 21 12Z"/></svg>会话<span class="badgeN">2</span></button>
+        <button class="tab on" data-tab="settings"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>我的</button>
+      </nav>
+    </section>
+
+    <!-- ---- P11 locked（手机端锁定提示，不是全屏锁：docs/08 §3.12）---- -->
+    <section class="screen" id="s-locked">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>重构 auth 中间件<span class="sub">Studio 工作站 · 已锁定</span></h1>
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg></button>
+      </div>
+
+      <div class="lockbanner">
+        <span class="lk">🔒</span>
+        <div class="ct">
+          <div class="tt">这台机器已锁定</div>
+          <div class="sb">能看不能操作 · 任务仍在后台继续</div>
+        </div>
+        <button class="act" data-sheet="sheetUnlock">请求解锁</button>
+      </div>
+
+      <div class="segs">
+        <button class="seg" data-seg="chat">对话</button>
+        <button class="seg on" data-seg="trace">执行过程</button>
+        <button class="seg" data-seg="changes">产物<span class="n">3</span></button>
+      </div>
+
+      <div class="scroll">
+        <div class="tl">
+          <div class="trow">
+            <span class="ico m">–</span>
+            <div class="h"><div class="tx dim">读了 3 个文件</div><span class="du">1.2s</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a">▤</span>
+            <div class="h"><div class="tx">改 <code>src/auth/middleware.ts</code></div>
+              <span class="add">+42</span><span class="del">−8</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico">◌</span>
+            <div class="h"><div class="tx dim">思考</div><span class="du">2.4s</span></div>
+            <div class="redact"><span class="lk">🔒</span>锁定中 · 内容不可见</div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a" style="font-size:11px">&gt;</span>
+            <div class="h"><div class="tx"><code>npm run build</code></div><span class="du">18s</span></div>
+            <div class="redact"><span class="lk">🔒</span>锁定中 · 输出与入参不可见</div>
+          </div>
+
+          <div class="trow appr dim">
+            <span class="ico w">⚠</span>
+            <div class="h"><div class="tx">等待批准：<code>rm -rf dist</code></div><button class="act">查看</button></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a">▤</span>
+            <div class="h"><div class="tx">改 <code>src/auth/cookie.ts</code></div>
+              <span class="add">+7</span><span class="del">−3</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a">▤</span>
+            <div class="h"><div class="tx">改 <code>src/auth/session.ts</code></div>
+              <span class="add">+5</span><span class="del">−1</span></div>
+          </div>
+
+          <div class="trow">
+            <span class="ico a" style="font-size:11px">&gt;</span>
+            <div class="h"><div class="tx"><code>npm test -- auth</code></div><span class="du">6.1s</span></div>
+            <div class="redact"><span class="lk">🔒</span>锁定中 · 输出与入参不可见</div>
+          </div>
+
+          <div class="trow">
+            <span class="ico">◌</span>
+            <div class="h"><div class="tx dim">思考</div><span class="du">1.8s</span></div>
+            <div class="redact"><span class="lk">🔒</span>锁定中 · 内容不可见</div>
+          </div>
+
+          <div class="tgroup">还有 34 步 ▾</div>
+        </div>
+      </div>
+
+      <div class="qbar dim">
+        <span class="plus">⊕</span><b>1 QUEUED</b><span class="pv">· 下一条「把测试也跑一遍」</span><span class="chev">▴</span>
+      </div>
+      <div class="composer dim">
+        <button class="iconbtn"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+        <div class="field"><input placeholder="解锁后才能发指令" disabled autocomplete="off">
+          <button class="send" disabled><svg class="i sm" viewBox="0 0 24 24" style="stroke-width:2.2"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- P12 pair（配对：docs/08 §3.13 / 04 §5.8）---- -->
+    <section class="screen" id="s-pair">
+      <div class="nav sm">
+        <button class="iconbtn" data-back><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <h1>添加电脑</h1>
+      </div>
+      <div class="pairwrap">
+        <div class="finder">
+          <span class="ring2"></span><span class="ring2"></span><span class="ring2"></span>
+          <span class="sweep"></span>
+          <span class="corner c1"></span><span class="corner c2"></span>
+          <span class="corner c3"></span><span class="corner c4"></span>
+          <div class="hintc">对准电脑上的二维码<br><span style="color:var(--t3);font-size:11px">不扫也没关系，不会弹任何提示</span></div>
+        </div>
+
+        <div class="pairsteps">
+          <div class="pairstep"><span class="i">01</span><span>在电脑上打开 dsh，侧边栏 → <b style="color:var(--t1);font-weight:500">DSH Link</b></span></div>
+          <div class="pairstep"><span class="i">02</span><span>点「添加手机」，屏幕上会出现二维码</span></div>
+          <div class="pairstep"><span class="i">03</span><span>扫完核对 6 位指纹，<b style="color:var(--t1);font-weight:500">两端一致才继续</b></span></div>
+        </div>
+
+        <div class="pairalt">手动输入地址</div>
+      </div>
+    </section>
+
+    <!-- ---- lock（锁屏覆盖层，独立屏以便深链 #lock） ---- -->
+    <section class="screen" id="s-lock">
+      <div class="lockwrap">
+        <div class="lockcard">
+          <div class="lockbar"><span class="dot" style="background:#FF3B2F;box-shadow:0 0 10px rgba(255,59,47,.9)"></span><b>DSH-LINK / MACBOOK PRO</b><span class="mono" style="color:rgba(255,190,180,.55)">LOCKED</span></div>
+          <div class="emblem">▲</div>
+          <div class="locksub">SESSION SUSPENDED</div>
+          <div class="lockfield" id="lockField">
+            <div class="dots" id="lockDots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <svg class="i sm" viewBox="0 0 24 24" style="color:rgba(255,190,180,.35)"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <div class="lockmsg" id="lockMsg"></div>
+          <div class="lockrow">
+            <button class="lockbtn primary" id="lockGo">解 锁</button>
+            <button class="lockbtn" id="lockReq">请求远程确认</button>
+          </div>
+          <div class="lockfoot"><span class="mono" id="lockIdle">IDLE 00:12</span><span class="mono" style="color:rgba(255,190,180,.42)">3 个任务在后台继续</span></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<!-- ============ SHEETS ============ -->
+<div class="backdrop" id="backdrop"></div>
+
+<div class="sheet" id="sheetApproval">
+  <div class="grab"></div>
+  <div class="sh">
+    <svg class="i sm" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.5 17.4A2 2 0 0 0 4.2 20.4h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+    高风险 · 执行命令
+  </div>
+  <div class="st">npm run build</div>
+  <div class="sc">
+    <div class="hdlabel">命令</div>
+    <pre>$ npm run build
+&gt; tsc &amp;&amp; vite build --mode production
+
+vite v5.4.2 building for production...
+✓ 128 modules transformed.</pre>
+    <div class="hdlabel">会修改</div>
+    <div class="kv"><span class="k mono">dist/index.js</span><span class="v" style="color:#3CCB7F">+1.2 MB</span></div>
+    <div class="kv"><span class="k mono">dist/assets/app.css</span><span class="v" style="color:#3CCB7F">+84 KB</span></div>
+    <div class="kv"><span class="k mono">覆盖现有产物</span><span class="v">3 个文件</span></div>
+    <div class="note">
+      <span class="ic"><svg class="i sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg></span>
+      <div>该命令以你的用户权限运行在 MacBook Pro 上。批准后不可撤销，但可以随时中断后续步骤。</div>
+    </div>
+  </div>
+  <div class="sf">
+    <button class="btn" id="sheetReject">拒绝</button>
+    <button class="btn primary" id="sheetApprove">批准并运行</button>
+  </div>
+</div>
+
+<div class="sheet" id="sheetUpload">
+  <div class="grab"></div>
+  <div class="sh" style="color:var(--t2)">
+    <svg class="i sm" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+    上传到 MacBook Pro
+  </div>
+  <div class="st">选择目标</div>
+  <div class="sc">
+    <div class="hdlabel">工作区</div>
+    <div class="setgroup" style="margin:0 0 6px">
+      <div class="setrow" style="min-height:56px">
+        <span class="ic" style="color:var(--accent)"><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></span>
+        <div class="lbl">dsh-app<small class="mono">~/code/dsh-app</small></div>
+        <svg class="i sm" viewBox="0 0 24 24" style="color:var(--accent)"><path d="m5 13 4 4L19 7"/></svg>
+      </div>
+    </div>
+    <div class="hdlabel">方式</div>
+    <div class="kv"><span class="k">上传到工作区</span><span class="v">可直接被 agent 引用</span></div>
+    <div class="kv"><span class="k">仅作为附件发送</span><span class="v" style="color:var(--t3)">不落盘到项目</span></div>
+    <div class="note">
+      <span class="ic" style="color:var(--accent)"><svg class="i sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg></span>
+      <div>默认落到工作区根目录，可稍后移动。大文件支持断点续传。</div>
+    </div>
+  </div>
+  <div class="sf">
+    <button class="btn" data-close>取消</button>
+    <button class="btn primary" id="pickFile">选择文件</button>
+  </div>
+</div>
+
+<div class="sheet" id="sheetUnlock">
+  <div class="grab"></div>
+  <div class="sh" style="color:var(--t2)">
+    <svg class="i sm" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+    已向 Studio 工作站发出请求
+  </div>
+  <div class="st">等电脑前的人确认</div>
+  <div class="sc">
+    <div class="kv"><span class="k">请求内容</span><span class="v">解除锁定（不恢复密码）</span></div>
+    <div class="kv"><span class="k">超时</span><span class="v">30 秒后自动拒绝</span></div>
+    <div class="kv"><span class="k">你的身份</span><span class="v">已配对设备 · 我的 iPhone</span></div>
+    <div class="note">
+      <span class="ic"><svg class="i sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg></span>
+      <div>电脑屏幕上会出现同一张卡片，需要那个人点「允许」。<b>手机不能自己解锁电脑</b>——
+        否则锁就形同虚设。</div>
+    </div>
+  </div>
+  <div class="sf">
+    <button class="btn" data-close>知道了</button>
+    <button class="btn primary" id="unlockAgain">再发一次</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  const $  = (s,r=document)=>r.querySelector(s);
+  const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+  const screens = ['devices','sessions','chat','trace','changes','queue',
+                   'files','file','repo','diff','plugins','settings','locked','lock','pair'];
+  const stack = ['devices'];
+
+  function show(name, push){
+    $$('.screen').forEach(el=>el.classList.toggle('on', el.id === 's-'+name));
+    $$('.tab').forEach(t=>t.classList.toggle('on', t.dataset.tab===name));
+    $$('.rail .iconbtn').forEach(b=>b.classList.toggle('on', b.dataset.tab===name));
+    if(push) stack.push(name);
+    else if(screens.includes(name) && stack[stack.length-1]!==name) stack[stack.length-1]=name;
+    const sc = $('#s-'+name+' .scroll, #s-'+name+' .chat, #s-'+name+' .ftree, #s-'+name+' .code');
+    if(sc) sc.scrollTop = 0;
+    if(name === 'lock' && typeof window.__lockFresh === 'function') window.__lockFresh();
+    if(typeof window.__applySkin === 'function') window.__applySkin();
+  }
+
+  $$('[data-tab]').forEach(b=>b.addEventListener('click',()=>{ stack.length=0; stack.push(b.dataset.tab); show(b.dataset.tab, false); }));
+  $$('[data-go]').forEach(el=>el.addEventListener('click',e=>{
+    // 锁定卡里嵌了一个"请求解锁"按钮：不拦住冒泡，外层卡片的 data-go 也会触发，
+    // 栈里就多推一层，返回键要按两下才回得去
+    e.stopPropagation();
+    const t = el.dataset.go; show(t, true);   // push 交给 show 做，别在这里重复
+  }));
+  $$('[data-back]').forEach(b=>b.addEventListener('click',()=>{
+    stack.pop(); show(stack[stack.length-1]||'devices', false);
+  }));
+  // 三段（对话 / 执行过程 / 产物）是同一页的三个视图：**替换**栈顶，不压栈，
+  // 否则从"产物"返回会先回到"执行过程"再到"对话"，用户会觉得返回键坏了。
+  $$('[data-seg]').forEach(el=>el.addEventListener('click',e=>{
+    e.stopPropagation();
+    const t = el.dataset.seg;
+    stack[stack.length-1] = t;
+    show(t, false);
+  }));
+
+  /* 平板横屏的右栏：克隆执行过程的时间线。
+     克隆而不是手写一份的原因很实际——trace 的行会随需求变（九种 kind、折叠组、
+     裁剪态），一份 markup 两处渲染，迟早出现"手机上有、平板上没有"的行。 */
+  const sideBody = $('#chatSideBody');
+  const traceTL = $('#s-trace .tl');
+  if (sideBody && traceTL) {
+    const clone = traceTL.cloneNode(true);
+    // 右栏不承担"跳到最新"，把悬浮键摘掉
+    clone.querySelectorAll('.newjump').forEach(n => n.remove());
+    sideBody.appendChild(clone);
+  }
+
+  // ---- sheets ----
+  const backdrop = $('#backdrop');
+  function openSheet(id){ backdrop.classList.add('on'); $(id).classList.add('on'); }
+  function closeSheets(){ backdrop.classList.remove('on'); $$('.sheet').forEach(s=>s.classList.remove('on')); }
+  backdrop.addEventListener('click', closeSheets);
+  $$('[data-close]').forEach(b=>b.addEventListener('click', closeSheets));
+  $$('[data-sheet]').forEach(el=>el.addEventListener('click',e=>{
+    e.stopPropagation();
+    openSheet('#'+el.dataset.sheet);
+  }));
+  $('#unlockAgain')?.addEventListener('click',()=>{ closeSheets(); });
+
+  $('#approveCard').addEventListener('click', e=>{
+    if(e.target.closest('button')) return;
+    openSheet('#sheetApproval');
+  });
+  $('#approveBtn').addEventListener('click', e=>{ e.stopPropagation(); openSheet('#sheetApproval'); });
+  $('#rejectBtn').addEventListener('click', e=>{ e.stopPropagation(); resolveApproval(false); });
+  $('#sheetApprove').addEventListener('click', ()=>resolveApproval(true));
+  $('#sheetReject').addEventListener('click', ()=>resolveApproval(false));
+
+  function resolveApproval(ok){
+    closeSheets();
+    const card = $('#approveCard');
+    card.classList.remove('high');
+    card.classList.add('done');
+    card.innerHTML = `
+      <div class="hd" style="color:${ok?'#3CCB7F':'#9AA6BC'}">
+        <svg class="i sm" viewBox="0 0 24 24">${ok?'<path d="m5 13 4 4L19 7"/>':'<path d="M6 6l12 12M18 6 6 18"/>'}</svg>
+        ${ok?'你已批准 · 14:05':'你已拒绝 · 14:05'}
+      </div>
+      <div class="cmd" style="color:var(--t3)">$ npm run build</div>
+      <div class="risk">${ok?'已在电脑上开始执行，完成后会通知你。':'已停止，agent 会询问下一步怎么做。'}</div>
+      <div style="height:12px"></div>`;
+    if(ok){
+      const chat = $('#chatScroll');
+      const m = document.createElement('div');
+      m.className='msg';
+      m.innerHTML = `<div class="assist muted">收到，开始构建…</div>
+        <div class="act"><span class="ico"><svg class="i sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="t">运行 <b>npm run build</b></span><span class="dur">进行中</span></div>`;
+      chat.appendChild(m);
+      setTimeout(()=>chat.scrollTo({top:chat.scrollHeight,behavior:'smooth'}),60);
+    }
+  }
+
+  // upload sheet
+  ['#uploadBtn','#uploadBtn2'].forEach(s=>$(s)?.addEventListener('click',()=>openSheet('#sheetUpload')));
+  $('#pickFile')?.addEventListener('click',()=>{ closeSheets(); simulateUpload(); });
+
+  let uploadTimer;
+  function simulateUpload(){
+    clearInterval(uploadTimer);
+    const bar = $('#upBar'), pct = $('#upPct');
+    if (!bar || !pct) return;   // 文件页重做后上传进度改成了进度环，没有这两个节点
+    let v = 8;
+    uploadTimer = setInterval(()=>{
+      v = Math.min(100, v + Math.random()*11);
+      bar.style.width = v+'%';
+      pct.textContent = Math.round(v)+'%';
+      if(v>=100){
+        clearInterval(uploadTimer);
+        pct.innerHTML = '<span style="color:#3CCB7F">完成</span>';
+        bar.style.background = '#3CCB7F';
+      }
+    }, 420);
+  }
+  simulateUpload();
+
+  // add device -> pairing
+  ['#addDevice','#addDevice2'].forEach(s=>$(s)?.addEventListener('click',()=>{
+    alert('原型：进入扫码配对页 → 相机取景 → 两端比对 6 位指纹 → 输入电脑密码 → 命名设备');
+  }));
+
+  // switches
+  $$('[data-switch]').forEach(sw=>sw.addEventListener('click',()=>sw.classList.toggle('on')));
+
+  // composer
+  const input = $('#msgInput'), send = $('#sendBtn');
+  input.addEventListener('input',()=>{ send.disabled = !input.value.trim(); });
+  function sendMsg(){
+    const text = input.value.trim(); if(!text) return;
+    const chat = $('#chatScroll');
+    const m = document.createElement('div');
+    m.className='msg';
+    m.innerHTML = `<div class="who" style="justify-content:flex-end">你</div><div class="bubble"></div>`;
+    m.querySelector('.bubble').textContent = text;
+    chat.appendChild(m);
+    input.value=''; send.disabled = true;
+    chat.scrollTo({top:chat.scrollHeight,behavior:'smooth'});
+
+    setTimeout(()=>{
+      const r = document.createElement('div');
+      r.className='msg';
+      r.innerHTML = `<div class="assist">收到，我来处理。<span class="cursor"></span></div>`;
+      chat.appendChild(r);
+      chat.scrollTo({top:chat.scrollHeight,behavior:'smooth'});
+    }, 700);
+  }
+  send.addEventListener('click', sendMsg);
+  input.addEventListener('keydown', e=>{ if(e.key==='Enter') sendMsg(); });
+
+  // device switch in rail
+  $$('.rail .dev').forEach(d=>d.addEventListener('click',()=>{
+    $$('.rail .dev').forEach(x=>x.classList.remove('on'));
+    d.classList.add('on');
+  }));
+
+  // deep-link: index.html#chat / #files / #plugins / #settings / #sessions
+  const initial = (location.hash || '').replace('#','');
+  if (screens.includes(initial)) { show(initial, true); } else { show('devices', false); }
+  window.addEventListener('hashchange', ()=>{
+    const h = (location.hash || '').replace('#','');
+    if (screens.includes(h)) { stack.length = 0; stack.push('devices'); show(h, true); }
+  });
+
+  // ── 皮肤：auto / moss / 550w + 浅色 ──────────────────────────────
+  // auto 的规则：**只有锁屏与危险确认整页切 550W**，其余 MOSS。
+  // "有等待审批"不让整页变红——那样红色就成了常态，再也起不到警示作用。
+  // 等待只用元素级提示（那张卡描边变红 + 黄点）。
+  const rootEl = document.documentElement;
+  const store = {
+    get(k, d){ try { return localStorage.getItem(k) || d } catch(e){ return d } },
+    set(k, v){ try { localStorage.setItem(k, v) } catch(e){} }
+  };
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('frame') === 'pc') document.body.classList.add('pc');
+
+  // 图片预览：P6 换渲染方式，不是新页面 —— 所以走 query 而不是新增 screen。
+  // 顺带把 nav 右侧的 +42/−8 摘掉：增删行数对图片没有意义，留着会让人以为这张图被改过。
+  if (qs.get('mode') === 'image') {
+    const f = document.getElementById('s-file');
+    if (f) {
+      f.classList.add('img');
+      const h1 = f.querySelector('.nav h1');
+      if (h1) h1.innerHTML = 'IMG_2041.jpg<span class="sub">相机胶卷 · 3024×4032 · 2.8 MB</span>';
+      f.querySelectorAll('.nav .add, .nav .del').forEach(n => n.remove());
+    }
+  }
+  let skinMode = qs.get('skin') || store.get('dsh-skin', 'auto');
+  let light = qs.get('light') ? qs.get('light') === '1' : store.get('dsh-light', '0') === '1';
+
+  function onLockScreen(){
+    const el = document.getElementById('s-lock');
+    return el !== null && el.classList.contains('on');
+  }
+  function applySkin(){
+    const resolved = skinMode === 'auto' ? (onLockScreen() ? '550w' : 'moss') : skinMode;
+    // URL 显式给了 skin 就不要被"自动"规则翻回去
+    rootEl.dataset.skin = resolved;
+    rootEl.dataset.light = light ? '1' : '0';
+    $$('#skinPick .pill').forEach(b=>{
+      b.classList.toggle('on', b.dataset.skinpick === skinMode || (b.dataset.lightpick && light));
+    });
+  }
+  window.__applySkin = applySkin;
+  $$('#skinPick .pill').forEach(b=>b.addEventListener('click', ()=>{
+    if (b.dataset.lightpick) light = !light;
+    else skinMode = b.dataset.skinpick;
+    store.set('dsh-skin', skinMode);
+    store.set('dsh-light', light ? '1' : '0');
+    applySkin();
+  }));
+  applySkin();
+
+  // ── 锁屏：失败 → 抖动 → 再点成功 ─────────────────────────────────
+  (function(){
+    const dotsBox = $('#lockDots');
+    const card = $('.lockcard');
+    const msg = $('#lockMsg');
+    const field = $('#lockField');
+    const idle = $('#lockIdle');
+    let filled = 0, failed = false, started = Date.now();
+
+    function paint(){
+      [...dotsBox.children].forEach((d,i)=>d.classList.toggle('on', i < filled));
+    }
+
+    function tickIdle(){
+      if(!document.getElementById('s-lock').classList.contains('on')) return;
+      const sec = Math.floor((Date.now() - started) / 1000);
+      idle.textContent = 'IDLE ' + String(Math.floor(sec/60)).padStart(2,'0') + ':' + String(sec%60).padStart(2,'0');
+      setTimeout(tickIdle, 1000);
+    }
+
+    // 点输入框：模拟"逐位输入"，让点亮点这个细节能被看到
+    field.addEventListener('click', ()=>{
+      if (filled >= 8) return;
+      filled++;
+      paint();
+    });
+
+    $('#lockGo').addEventListener('click', ()=>{
+      if (!failed){
+        failed = true;
+        filled = 0; paint();
+        card.classList.remove('shake');
+        void card.offsetWidth;
+        card.classList.add('shake');
+        msg.textContent = '密码错误 · 还可尝试 4 次';
+        return;
+      }
+      // 第二次点：演示成功路径
+      msg.textContent = '';
+      card.style.transition = 'opacity .42s ease, transform .42s ease';
+      card.style.opacity = '0';
+      card.style.transform = 'translateY(-10px)';
+      setTimeout(()=>{
+        card.style.opacity = ''; card.style.transform = ''; card.style.transition = '';
+        hideLock();
+        stack.length = 0; stack.push('devices'); show('devices', false);
+        failed = false; filled = 0; paint();
+      }, 420);
+    });
+
+    $('#lockReq').addEventListener('click', ()=>{
+      msg.textContent = '已向本机发送确认请求，30 秒内不确认将自动拒绝';
+    });
+
+    function hideLock(){ started = Date.now(); }
+    // 进入锁屏时重置计时
+    const origShow = show;
+    window.__lockFresh = function(){ started = Date.now(); tickIdle(); };
+  })();
+
+  // 深链 #lock 时启动计时
+  if ((location.hash || '').replace('#','') === 'lock') { try { window.__lockFresh() } catch(e){} }
+})();
+
+// ── 冷启动：跑完自毁，可 SKIP，reduced-motion 直接跳过 ──────────────
+// 不阻塞：底下的 .app 已经渲染完，这一层只是盖在上面 1.4 秒。
+// 真实工程里这段在 app/src/components/moss/MossBoot.vue，逻辑一致。
+(function(){
+  const boot = document.getElementById('boot');
+  if (!boot) return;
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // 截图脚本传 ?shot=1：启动动画是给第一次打开的人看的，不该出现在设计图里
+  const isShot = location.search.indexOf('shot=1') >= 0;
+  let done = false;
+
+  function finish(){
+    if (done) return;
+    done = true;
+    boot.classList.add('out');
+    setTimeout(()=>{ if (boot.parentNode) boot.remove(); }, 360);
+    window.__bootDone = true;
+  }
+
+  if (reduce || isShot) { boot.remove(); window.__bootDone = true; return; }
+
+  const skip = document.getElementById('bootSkip');
+  if (skip) skip.addEventListener('click', finish);
+  // 1400ms 与 CSS 里最长的那个动画对齐（bootLine 1.3s + .1s 延迟）
+  setTimeout(finish, 1400);
+})();
+</script>
+</body>
+</html>

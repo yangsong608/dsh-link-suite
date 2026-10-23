@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // uni-app 官方模板的 viewport 处理：支持 env() 的设备才加 viewport-fit=cover，
+      // 否则 iPhone 上的安全区变量恒为 0，底部 tabbar 会被 Home 指示条压住。
+      var cover = 'CSS' in window && typeof CSS.supports === 'function'
+        && (CSS.supports('top: env(a)') || CSS.supports('top: constant(a)'))
+      document.write(
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'
+        + (cover ? ', viewport-fit=cover' : '') + '" />'
+      )
+    </script>
+    <!-- 首屏底色：JS 还没跑起来之前，宁可先是一片 MOSS 的黑，也不要白闪一下 -->
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#050806" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F2F7F4" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #050806; }
+      @media (prefers-color-scheme: light) { html, body { background: #F2F7F4; } }
+    </style>
+    <title>DSH Link</title>
+    <!--preload-links-->
+    <!--app-context-->
+  </head>
+  <body>
+    <div id="app"><!--app-html--></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

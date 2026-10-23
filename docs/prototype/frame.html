@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<!--
+  录屏用的"放大画框"。
+
+  为什么需要它：CDP 的 Page.startScreencast 在 headless 下**只按 CSS 像素出帧**，
+  视口 deviceScaleFactor=3 也照样给 390×844。想要 780×1688 的清晰视频，只能把
+  390×844 的页面放进一个 transform: scale(2) 的 iframe 里——transform 是矢量的，
+  文字按 2 倍重新栅格化，所以是"更清晰"，不是"放大后模糊"。
+
+  参数：?src=<被嵌页面>&w=390&h=844&s=2
+-->
+<style>
+  html,body{margin:0;height:100%;background:#050806;overflow:hidden}
+  iframe{border:0;display:block;transform-origin:0 0}
+</style>
+</head>
+<body>
+<script>
+  const q = new URLSearchParams(location.search);
+  const w = +q.get('w') || 390, h = +q.get('h') || 844, s = +q.get('s') || 2;
+  const f = document.createElement('iframe');
+  f.src = q.get('src') || 'index.html';
+  f.width = w; f.height = h;
+  f.style.width = w + 'px'; f.style.height = h + 'px';
+  f.style.transform = 'scale(' + s + ')';
+  document.body.style.width = w * s + 'px';
+  document.body.style.height = h * s + 'px';
+  document.body.appendChild(f);
+</script>
+</body>
+</html>

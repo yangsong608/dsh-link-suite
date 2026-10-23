@@ -1,0 +1,344 @@
+/**
+ * MOSS 原子层：材质、终端框、状态点、动效。
+ *
+ * 全部纯 CSS，**零图片**（首包 < 400KB 的硬要求，见 docs/05 §8）。
+ * 禁用 backdrop-filter：低端 Android 上单次合成 4–8ms，而一个列表页可能有 20 个卡片。
+ */
+
+.dsh {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh; /* 老 WebView 兜底 */
+  min-height: 100dvh;
+  background: radial-gradient(ellipse 90% 70% at 50% 38%, var(--bg-grad-1) 0%, var(--bg-grad-2) 48%, var(--bg-grad-3) 100%);
+  background-color: var(--bg);
+  color: var(--t1);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+  overflow: hidden;
+}
+
+/**
+ * 必须在根上把 box-sizing 拉回来。
+ * uni-app H5 的 uni-view 默认是 content-box，凡是 `width:100% + padding` 的容器
+ * （比如 .scroll 的 `padding: 0 12px`）都会比视口宽 24px，页面向右溢出、卡片被裁。
+ * 这个问题只在真实渲染时出现，看原型 HTML 永远发现不了。
+ */
+.dsh,
+.dsh view,
+.dsh text,
+.dsh button,
+.dsh scroll-view,
+.dsh image {
+  box-sizing: border-box;
+}
+
+/* ── 材质层 ─────────────────────────────────────────────────────────── */
+
+.veil {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  opacity: var(--veil-opacity);
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.016) 0 1px, rgba(0, 0, 0, 0) 1px 4px),
+    radial-gradient(circle at 50% 45%, rgba(0, 0, 0, 0) 36%, rgba(0, 0, 0, 0.8) 100%);
+  mix-blend-mode: screen;
+}
+
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  opacity: 0.03;
+  /* 用两层极小半径的点阵模拟噪点，比 base64 图片省一次请求 */
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.9) 0.5px, transparent 0.5px),
+    radial-gradient(rgba(255, 255, 255, 0.7) 0.5px, transparent 0.5px);
+  background-size: 3px 3px, 5px 5px;
+  background-position: 0 0, 1px 2px;
+}
+
+/* ── 排版 ───────────────────────────────────────────────────────────── */
+
+.mono {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.sect {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--t3);
+  padding: 0 4px;
+  margin: 18px 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.t2 { color: var(--t2); }
+.t3 { color: var(--t3); }
+
+/* ── 终端框：本产品的原子组件 ────────────────────────────────────────── */
+
+.term {
+  position: relative;
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--r-term);
+  background: linear-gradient(180deg, var(--s1) 96%, var(--bg) 98%);
+  /* 三层阴影是"荧光屏"质感的全部来源，省任何一层都会退化成普通卡片 */
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.2),
+    0 12px 40px rgba(0, 0, 0, 0.45),
+    inset 0 0 60px var(--acc-soft);
+  overflow: hidden;
+  transition: border-color var(--t-fast) var(--ease-out), transform var(--t-fast) var(--ease-out);
+}
+
+.term:active {
+  transform: scale(0.99);
+}
+
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--bd);
+  background: linear-gradient(180deg, var(--acc-soft), transparent);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+
+.term-bar .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t2);
+  /* 顶栏整体是终端风（大写 + 宽字距），但设备名是用户自己起的中文名。
+     对中文名保持大写转换 + 1.3px 字距会让"Studio 工作站"变成
+     "STUDIO 工作站"这种夹生排版，所以名字这一格例外。 */
+  text-transform: none;
+  letter-spacing: 0.2px;
+  font-size: 12px;
+  color: var(--t1);
+}
+
+.term-bar .tag {
+  letter-spacing: 0.6px;
+  text-transform: none;
+}
+
+.term-body {
+  padding: 14px;
+}
+
+/* ── 状态点与波 ─────────────────────────────────────────────────────── */
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 9px;
+  background: var(--acc);
+}
+
+.dot.glow {
+  box-shadow: 0 0 10px var(--acc-glow);
+  animation: breathe 2.4s ease-in-out infinite;
+  animation-play-state: running;
+}
+
+.dsh.is-lite .dot.glow,
+.dsh.is-light .dot.glow {
+  animation: none;
+  box-shadow: none;
+}
+
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 6px var(--acc-glow); opacity: 0.85; }
+  50% { box-shadow: 0 0 14px var(--acc-glow); opacity: 1; }
+}
+
+.dot.off {
+  background: transparent;
+  border: 1px solid var(--t3);
+  box-shadow: none;
+}
+
+.dot.warn { background: var(--warn); box-shadow: 0 0 10px rgba(232, 194, 74, 0.35); }
+
+/**
+ * 锁定：实心红点，**故意不呼吸**。
+ * 会呼吸的灯表示"在做事"，锁住表示"停住了"——这两层语义不能混用同一个动效。
+ * 550W 皮肤下 --acc 本身就是红，但 MOSS 皮肤下 --acc 是绿，
+ * 所以锁定的红必须单独走 --danger，不能借强调色。
+ */
+.dot.danger { background: var(--danger); box-shadow: 0 0 9px var(--danger); }
+.dsh.is-light .dot.danger { box-shadow: none; }
+
+/* 连接中：三格阶梯波。比转圈更"像网络在做事情" */
+.wave {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 10px;
+}
+
+.wave i {
+  width: 2px;
+  background: var(--warn);
+  border-radius: 1px;
+  animation: wave 1.2s ease-in-out infinite;
+}
+.wave i:nth-child(1) { height: 4px; animation-delay: 0s; }
+.wave i:nth-child(2) { height: 7px; animation-delay: 0.15s; }
+.wave i:nth-child(3) { height: 10px; animation-delay: 0.3s; }
+
+@keyframes wave {
+  0%, 100% { opacity: 0.35; transform: scaleY(0.7); }
+  50% { opacity: 1; transform: scaleY(1); }
+}
+
+.dsh.is-lite .wave i { animation: none; opacity: 0.8; }
+
+/* ── 按钮 ───────────────────────────────────────────────────────────── */
+
+.btn {
+  height: 44px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid var(--bd);
+  background: var(--s1);
+  color: var(--t1);
+  transition: transform var(--t-fast) var(--ease-out), background var(--t-fast);
+}
+
+.btn:active { transform: scale(0.975); background: var(--s2); }
+
+.btn.primary {
+  background: var(--acc);
+  border-color: transparent;
+  color: var(--acc-ink);
+  font-weight: 600;
+  box-shadow: 0 6px 20px var(--acc-soft);
+}
+
+.btn.ghost {
+  background: transparent;
+}
+
+/* ── 动效工具 ───────────────────────────────────────────────────────── */
+
+.shake {
+  animation: shake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-9px); }
+  32% { transform: translateX(8px); }
+  50% { transform: translateX(-5px); }
+  68% { transform: translateX(4px); }
+  84% { transform: translateX(-2px); }
+}
+
+.fade-in {
+  animation: fadeIn var(--t-mid) var(--ease-out) both;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background: var(--acc);
+  border-radius: 1px;
+  vertical-align: -2px;
+  animation: blink 1s steps(2, end) infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* 正在跑的会话：左侧 1px 竖条上下扫 */
+.running-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--acc), transparent);
+  animation: scanDown 1.8s ease-in-out infinite;
+}
+
+@keyframes scanDown {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.dsh.is-lite .running-bar { animation: none; opacity: 0.6; }
+
+/* ── 布局辅助 ───────────────────────────────────────────────────────── */
+
+.hairline {
+  height: 1px;
+  background: var(--bd);
+  transform: scaleY(0.5);
+  transform-origin: 0 0;
+}
+
+.safe-top { padding-top: calc(env(safe-area-inset-top) + 8px); }
+.safe-bottom { padding-bottom: calc(env(safe-area-inset-bottom) + 8px); }
+
+/**
+ * 滚动容器。
+ * `min-height: 0` 不是可有可无的：flex 子项默认 min-height:auto，
+ * 内容比容器高时它不会收缩到容器高度，`overflow-y:auto` 就永远不触发，
+ * 内容会直接溢出父节点、被根上的 `overflow:hidden` 裁掉——表现是"页面滚不动"。
+ */
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  /* 给底部固定导航让位，否则最后一行永远压在 tabbar 下面 */
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+}
+
+/* 减少动效偏好：只留 200ms 淡入 */
+@media (prefers-reduced-motion: reduce) {
+  .dot.glow,
+  .wave i,
+  .running-bar,
+  .cursor {
+    animation: none !important;
+  }
+  .fade-in,
+  .shake {
+    animation-duration: 200ms !important;
+  }
+}

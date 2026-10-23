@@ -1,0 +1,16 @@
+{
+  "name": "dsh-link-prototype",
+  "private": true,
+  "type": "module",
+  "description": "高保真原型 + UI 设计图生成脚本。不参与 app/ 与 plugin/ 的构建。",
+  "scripts": {
+    "shot": "node capture.mjs",
+    "shot:app": "node shot-app.mjs",
+    "verify": "node verify-layout.mjs",
+    "record": "node record.mjs",
+    "serve": "python3 -m http.server 8788"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.16.0"
+  }
+}

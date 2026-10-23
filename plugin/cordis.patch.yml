@@ -1,0 +1,11 @@
+# dsh-link —— DSH bundle patch
+#
+# 一个包、一个插件条目。网关与锁屏是插件的两个子系统，由 config 开关控制：
+#   gateway.enabled=false → 只做锁屏（不监听任何端口）
+#   lock.enabled=false    → 只做远程访问（没有锁）
+#
+# 不拆成两个条目是因为同一个模块 apply 两次会在 Context 里建两套服务，
+# 反而更容易互相踩。config 开关足够表达"我只想用一个"。
+- insert:
+    - id: dsh-link
+      name: dsh-link
