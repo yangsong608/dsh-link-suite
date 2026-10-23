@@ -163,11 +163,16 @@ function scanToPair(): void {
       const raw = typeof res.result === 'string' ? res.result : ''
       const parsed = decodePairUri(raw)
       if (!parsed.ok) {
-        // 扫错了对象时要说清楚，而不是笼统的"无效二维码"
+        // 失败时把**原始内容**也显示出来（截断）。
+        // 排查这类问题时，"看到的是什么"比"我判断它不对"有用得多——
+        // 扫码 SDK 可能改写内容（大写、编码、加前后缀），
+        // 不看到原文就只能靠猜。
+        const preview = raw.length > 60 ? `${raw.slice(0, 60)}…` : raw
         pairError.value =
-          parsed.reason === 'not-pair-uri'
-            ? '这不是 MOSS Link 的配对码（请扫电脑设置页上的那张）'
-            : '配对码格式不对，请让电脑重新生成'
+          (parsed.reason === 'not-pair-uri'
+            ? '这不是 MOSS Link 的配对码'
+            : '配对码格式不对，请让电脑重新生成') +
+          (preview.length > 0 ? `（扫到：${preview}）` : '（扫到空内容）')
         return
       }
       pairAddress.value = parsed.wsUrl
@@ -198,27 +203,47 @@ async function finishPair(): Promise<void> {
     return
   }
 
-  // 连接目标：优先当前选中的设备；首次配对则用用户填的地址建一条临时连接
+  /**
+   * 决定连哪台机器。
+   *
+   * 这里踩过一个很隐蔽的坑：原来的逻辑是「优先当前设备，没有才用输入框的地址」。
+   * 于是**已经有设备的情况下，扫码给的地址被完全忽略**——用的是上次的旧地址
+   * （可能已离线、或换了网段），表现就是"扫码识别成功，然后一直配对中直到超时"。
+   *
+   * 正确顺序应该是：**本次明确提供的地址优先**。
+   * 用户在配对界面填/扫出来的地址，就是他想连的那台机器。
+   */
+  const typedUrl = pairAddress.value.trim()
+  const hasTypedUrl = /^wss?:\/\//.test(typedUrl)
+
   let device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
-  if (device === undefined) {
-    const url = pairAddress.value.trim()
-    if (!/^wss?:\/\//.test(url)) {
-      pairError.value = '请填写电脑地址，例如 ws://192.168.1.23:7443/dshlink'
-      return
+
+  if (hasTypedUrl) {
+    const existing = state.devices.find((d) => d.endpoint?.url === typedUrl)
+    if (existing !== undefined) {
+      // 地址已经配对过：直接复用，避免建出重复设备卡
+      device = existing
+      state.activeId = existing.deviceId
+    } else {
+      // 新地址：建一条临时设备（配对成功后会从 device.list 拿到真实 id）
+      device = {
+        deviceId: `tmp_${Date.now()}`,
+        name: '未命名电脑',
+        platform: 'desktop',
+        role: 'operator',
+        createdAt: Date.now(),
+        lastSeen: Date.now(),
+        conn: 'connecting',
+        endpoint: { url: typedUrl, kind: typedUrl.startsWith('wss:') ? 'relay' : 'lan' },
+      }
+      state.devices = [...state.devices, device]
+      state.activeId = device.deviceId
     }
-    device = {
-      deviceId: `tmp_${Date.now()}`,
-      name: '未命名电脑',
-      platform: 'desktop',
-      role: 'operator',
-      createdAt: Date.now(),
-      lastSeen: Date.now(),
-      conn: 'connecting',
-      endpoint: { url, kind: 'lan' },
-    }
-    state.devices = [...state.devices, device]
-    state.activeId = device.deviceId
+  } else if (device === undefined) {
+    pairError.value = '请填写电脑地址，例如 ws://192.168.1.23:7443/dshlink'
+    return
   }
+
   const link = connectDevice(device)
   if (link === undefined) {
     pairError.value = '无法连接电脑，请确认地址正确且在同一局域网'
@@ -397,12 +422,17 @@ onLoad(() => {
           </text>
 
           <!-- 扫码是主路径：一次拿到地址+码，不用手抄 ws:// -->
+          <!-- 图标用纯 CSS 画：uni-app 的 App 端对内联 SVG 支持不稳定，
+               会出现"图标消失但文字在"的情况。四个角 + 中间扫描线足够表意。 -->
           <view class="scan-btn" :class="{ 'is-disabled': pairBusy }" @tap="scanToPair">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-              <path d="M4 8V5a1 1 0 0 1 1-1h3M20 8V5a1 1 0 0 0-1-1h-3M4 16v3a1 1 0 0 0 1 1h3M20 16v3a1 1 0 0 1-1 1h-3" />
-              <path d="M4 12h16" />
-            </svg>
-            <text>扫码配对</text>
+            <view class="scan-ico">
+              <view class="scan-corner tl" />
+              <view class="scan-corner tr" />
+              <view class="scan-corner bl" />
+              <view class="scan-corner br" />
+              <view class="scan-line" />
+            </view>
+            <text class="scan-t">扫码配对</text>
           </view>
 
           <view class="or-row"><view class="or-line" /><text class="or-t t3">或手动输入</text><view class="or-line" /></view>
@@ -502,12 +532,23 @@ onLoad(() => {
 .empty-t { display: block; margin-top: 8px; font-size: 14px; color: var(--t1); }
 .empty-d { display: block; margin-top: 6px; font-size: 11.5px; line-height: 17px; }
 
+/**
+ * 扫码按钮。
+ *
+ * 居中要写三处，少一处在某些 WebView 上就会偏：
+ *   - flex + justify-content: center 负责「图标 + 文字」整体居中
+ *   - text-align: center 兜住 uni-app 把 <text> 渲染成 inline 元素的情况
+ *     （inline 元素不参与 flex 的 justify，会贴左）
+ *   - line-height 与 height 相等，让文字在行盒里垂直居中
+ */
 .scan-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   height: 52px;
+  line-height: 52px;
+  text-align: center;
   margin-top: 16px;
   border-radius: var(--r-md);
   border: 1px solid var(--bd-strong);
@@ -518,7 +559,44 @@ onLoad(() => {
 }
 
 .scan-btn:active { transform: scale(0.985); }
-.scan-btn svg { width: 20px; height: 20px; }
+
+/* 扫码图标：四个角 + 扫描线，纯 CSS */
+.scan-ico {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.scan-corner {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border: 2px solid currentColor;
+}
+
+.scan-corner.tl { top: 0; left: 0; border-right: 0; border-bottom: 0; border-top-left-radius: 2px; }
+.scan-corner.tr { top: 0; right: 0; border-left: 0; border-bottom: 0; border-top-right-radius: 2px; }
+.scan-corner.bl { bottom: 0; left: 0; border-right: 0; border-top: 0; border-bottom-left-radius: 2px; }
+.scan-corner.br { bottom: 0; right: 0; border-left: 0; border-top: 0; border-bottom-right-radius: 2px; }
+
+.scan-line {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+/* 文字块自己去撑，避免 inline 元素贴左 */
+.scan-t {
+  line-height: 1;
+  display: inline-block;
+  text-align: center;
+}
 
 .or-row {
   display: flex;

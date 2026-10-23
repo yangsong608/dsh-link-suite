@@ -61,6 +61,42 @@ function lanAddresses(): string[] {
   return [...new Set(candidates)].sort()
 }
 
+/**
+ * 运行时配置（界面可改、重启仍在）。
+ *
+ * 只存"用户在界面上显式设置过"的东西：中继地址、额外 Origin。
+ * 不存密码或令牌——那些有自己的文件与权限（见 lock.json / devices.json）。
+ */
+interface RuntimeConfig {
+  readonly relayUrl?: string
+  readonly allowedOrigins?: readonly string[]
+}
+
+async function loadRuntime(dir: string): Promise<RuntimeConfig> {
+  try {
+    const raw = await fs.readFile(join(dir, 'runtime.json'), 'utf8')
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const out: { relayUrl?: string; allowedOrigins?: readonly string[] } = {}
+    if (typeof parsed['relayUrl'] === 'string' && /^wss?:\/\//.test(parsed['relayUrl'])) {
+      out.relayUrl = parsed['relayUrl']
+    }
+    if (Array.isArray(parsed['allowedOrigins'])) {
+      out.allowedOrigins = parsed['allowedOrigins'].filter((x): x is string => typeof x === 'string')
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+async function saveRuntime(dir: string, value: RuntimeConfig): Promise<void> {
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+  await fs.writeFile(join(dir, 'runtime.json'), `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  })
+}
+
 async function ensureHostId(): Promise<string> {
   const file = join(LINK_DIR, 'host.json')
   try {
@@ -112,9 +148,31 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
    * 用户扫码时期望"一次成功"，所以默认给最可能成功的那个。
    */
   const lanEndpoints = lanAddresses().map((ip) => `ws://${ip}:${cfg.gateway.port}/dshlink`)
-  const endpoints = cfg.gateway.relayUrl === undefined
-    ? lanEndpoints
-    : [cfg.gateway.relayUrl, ...lanEndpoints]
+
+  /**
+   * 运行时叠加配置：中继地址与额外 Origin。
+   *
+   * 为什么单独存一份而不是改 profile 的 cordis 配置：
+   *   1. 用户不会去手编 YAML；界面里填了就该立刻生效
+   *   2. cordis 配置由 dsh 管理，插件去改它是越界的
+   * 所以存在 ~/.dsh/dsh-link/runtime.json，启动时读、界面改时写。
+   * 优先级：runtime 覆盖 profile 配置（用户最后一次的显式选择说了算）。
+   */
+  const runtime = await loadRuntime(LINK_DIR)
+
+  // relayUrl 可变：界面里改了要立刻生效，不必改 profile 的 cordis 配置。
+  // 放进对象是因为要跨请求共享（HTTP 处理器拿不到闭包变量）。
+  const relay: RelayState = {
+    relayUrl: runtime.relayUrl ?? cfg.gateway.relayUrl,
+    endpoints: [],
+  }
+
+  const recomputeEndpoints = (): string[] =>
+    relay.relayUrl === undefined ? [...lanEndpoints] : [relay.relayUrl, ...lanEndpoints]
+
+  relay.endpoints = recomputeEndpoints()
+  // 配对与 RPC 都读这个 getter：改了中继后不必重启，下一次生成码就用新地址
+  const endpoints = relay.endpoints
 
   // ── 订阅与审批 ──────────────────────────────────────────────────────────
   // 两者都依赖网关（推帧 / 广播），所以用晚绑定：先建对象，网关起来后它们读到的
@@ -198,7 +256,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     const off = webServer.register({
       kind: 'prefix',
       path: '/dsh-link',
-      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId, endpoints),
+      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId, relay, recomputeEndpoints),
     })
     ctx.effect(() => () => off(), 'dsh-link: http routes')
   }
@@ -227,13 +285,26 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
  * 注意这是 best-effort：反代会改写 remoteAddress，真正可靠的做法是让 dsh 的
  * connection 层来鉴权（本插件不碰那一层，见 docs/06 §3）。
  */
+/**
+ * 中继配置的可变状态。
+ *
+ * 单独一个对象是因为它需要**跨请求可变**：界面里改了地址，
+ * 后续的 pair.start 要立刻用新地址生成二维码。用闭包变量传不进去
+ * （makeHttpHandler 是独立函数），所以用一个可共享的持有者对象。
+ */
+interface RelayState {
+  relayUrl: string | undefined
+  endpoints: string[]
+}
+
 function makeHttpHandler(
   lock: LockService,
   gateway: Gateway | undefined,
   devices: DeviceRegistry,
   cfg: LinkConfig,
   hostId: string,
-  endpoints: readonly string[],
+  relay: RelayState,
+  recomputeEndpoints: () => string[],
 ) {
   return async (rawReq: unknown, rawRes: unknown): Promise<void> => {
     const req = rawReq as IncomingMessage
@@ -255,7 +326,7 @@ function makeHttpHandler(
       // 设置页：把"只有接口、没有入口"的能力补上一个可点的界面。
       if (url.pathname === SETUP_PATH && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        res.end(renderSetupPage(hostId, endpoints, gateway?.port ?? cfg.gateway.port))
+        res.end(renderSetupPage(hostId, relay.endpoints, gateway?.port ?? cfg.gateway.port))
         return
       }
 
@@ -387,17 +458,15 @@ function makeHttpHandler(
         // 原来只回一个码，用户得自己去设置页翻 IP 手抄——那是把
         // 宿主能做的事推给了用户。现在每个网卡一个候选，外加二维码。
         const fingerprint = hostId.slice(-6)
-        const candidates = endpoints.map((wsUrl) => {
+        // 逐个网卡算候选地址；算不出来的直接跳过（而不是留一个 undefined）。
+        const candidates: { wsUrl: string; uri: string; qr: unknown }[] = []
+        for (const wsUrl of relay.endpoints) {
           const payload = pairPayloadFromEndpoint(wsUrl, session.code, fingerprint)
-          if (payload === undefined) return undefined
+          if (payload === undefined) continue
           const uri = encodePairUri(payload)
-          return {
-            wsUrl,
-            uri,
-            // 二维码矩阵直接给出去：前端不用引任何 QR 库，照着画格子就行
-            qr: encodeQr(uri),
-          }
-        }).filter((c): c is NonNullable<typeof c> => c !== undefined)
+          candidates.push({ wsUrl, uri, qr: encodeQr(uri) })
+        }
+        const first = candidates[0]
 
         json(200, {
           code: session.code,
@@ -405,9 +474,9 @@ function makeHttpHandler(
           hostId,
           fingerprint,
           // 首选地址（第一个网卡）。多网卡时手机若连不上，换下一个。
-          wsUrl: candidates[0]?.wsUrl,
+          wsUrl: first?.wsUrl,
           candidates: candidates.map((c) => ({ wsUrl: c.wsUrl, uri: c.uri })),
-          qr: candidates[0]?.qr,
+          qr: first?.qr,
         })
         return
       }
@@ -429,6 +498,45 @@ function makeHttpHandler(
             approved: s.approved,
           })),
         })
+        return
+      }
+
+      // ── 公网接入（中继/反代）配置 ─────────────────────────────────────
+      // 这是"没有界面入口"的补课：之前 relayUrl 只有配置文件里能改，
+      // 用户不会去手编 YAML。现在设置页能填、能看、能清。
+      if (url.pathname === '/dsh-link/config/relay' && req.method === 'GET') {
+        json(200, {
+          relayUrl: relay.relayUrl ?? null,
+          endpoints: relay.endpoints,
+          // 当前监听的局域网端口，方便用户拼自己的反代地址
+          port: gateway?.port ?? cfg.gateway.port,
+        })
+        return
+      }
+
+      if (url.pathname === '/dsh-link/config/relay' && req.method === 'POST') {
+        const body = await readJson(req)
+        const next = typeof body['relayUrl'] === 'string' ? body['relayUrl'].trim() : ''
+
+        // 空串 = 清除（回到只用局域网）
+        if (next.length === 0) {
+          relay.relayUrl = undefined
+          await saveRuntime(LINK_DIR, {})
+          relay.endpoints = recomputeEndpoints()
+          json(200, { ok: true, relayUrl: null, endpoints: relay.endpoints })
+          return
+        }
+
+        // 只接受 ws:// 或 wss://：http 地址贴进来是最常见的误操作
+        if (!/^wss?:\/\/[^\s]+$/.test(next)) {
+          json(400, { error: '请填 ws:// 或 wss:// 开头的地址，例如 wss://dsh.example.com/dshlink' })
+          return
+        }
+
+        relay.relayUrl = next
+        await saveRuntime(LINK_DIR, { relayUrl: next })
+        relay.endpoints = recomputeEndpoints()
+        json(200, { ok: true, relayUrl: next, endpoints: relay.endpoints })
         return
       }
 
