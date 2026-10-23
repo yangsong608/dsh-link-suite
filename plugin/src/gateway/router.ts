@@ -427,7 +427,10 @@ export function createHandlers(): GatewayHandlers {
       const sessions = sessionsOf(rc.ctx)
       if (sessions?.projections === undefined) throw new RpcError('host/unavailable', '宿主不支持读取队列')
       const sessionId = str(p, 'sessionId')
-      const projection = (await sessions.projections({ sessionId })) as {
+      // 宿主的 projections 是 (request, signal)：漏传 signal 会在内部
+      // 调 signal.throwIfAborted() 时抛 "Cannot read properties of undefined (reading 'aborted')"
+      const controller = new AbortController()
+      const projection = (await sessions.projections({ sessionId }, controller.signal)) as {
         values?: { inbox?: Record<string, readonly unknown[]> }
       } | null
       const inbox = projection?.values?.inbox ?? {}

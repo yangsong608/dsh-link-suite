@@ -67,7 +67,7 @@ export interface SessionController {
   create?(request: { workspaceId?: string; cwd?: string; sessionId?: string; agentPreset?: string }): Promise<unknown>
   modelCatalog?(): Promise<unknown>
   /** 读投影（队列就在 values.inbox）。冷会话也能读，不需要唤醒 agent。 */
-  projections?(request: { sessionId: string }): Promise<unknown>
+  projections?(request: { sessionId: string }, signal: AbortSignal): Promise<unknown>
   /** 修改队列项：edit / remove / steer。 */
   updateQueue?(request: {
     sessionId: string
