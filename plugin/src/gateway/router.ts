@@ -654,6 +654,38 @@ export function createHandlers(): GatewayHandlers {
       }
     },
 
+    // ── 新建会话 ──────────────────────────────────────────────────────────
+    //
+    // dsh 的 session.create({ workspaceId?, cwd?, sessionId?, agentPreset? })：
+    //   - workspaceId 与 cwd 二选一（会话要么归属某个工作区，要么自己占一个目录）
+    //   - sessionId 可传：若那个 id 下存着一个**空白会话**会复用，否则按新 id 建
+    // 移动端不传 sessionId，让宿主自己生成。
+    'session.create': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions?.create === undefined) throw new RpcError('host/unavailable', '宿主不支持新建会话')
+      const workspaceId = typeof p['workspaceId'] === 'string' && p['workspaceId'].length > 0 ? p['workspaceId'] : undefined
+      const cwd = typeof p['cwd'] === 'string' && p['cwd'].length > 0 ? p['cwd'] : undefined
+      if (workspaceId === undefined && cwd === undefined) {
+        throw new RpcError('rpc/bad-args', '需要指定工作区或目录')
+      }
+      try {
+        const value = (await sessions.create({
+          ...(workspaceId === undefined ? {} : { workspaceId }),
+          ...(cwd === undefined ? {} : { cwd }),
+          ...(typeof p['agentPreset'] === 'string' ? { agentPreset: p['agentPreset'] } : {}),
+        })) as { sessionId?: unknown; agentPreset?: unknown } | undefined
+        const sessionId = typeof value?.sessionId === 'string' ? value.sessionId : ''
+        if (sessionId.length === 0) throw new RpcError('host/internal', '宿主没有返回会话 id')
+        return {
+          sessionId,
+          ...(typeof value?.agentPreset === 'string' ? { agentPreset: value.agentPreset } : {}),
+        }
+      } catch (error) {
+        if (error instanceof RpcError) throw error
+        throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
+      }
+    },
+
     // ── 会话管理 ──────────────────────────────────────────────────────────
     'session.rename': async (rc, p) => {
       const sessions = sessionsOf(rc.ctx)

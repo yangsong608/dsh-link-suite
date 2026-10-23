@@ -251,6 +251,7 @@ function toStream(ev, seq, isHistory) {
           return reply({ armed: true, hasPassword: true, locked: false, soft: false, failedAttempts: 0 })
         case 'workspace.list': return reply({ workspaces: window.__MOCK__.workspaces })
         case 'session.list': return reply({ sessions: window.__MOCK__.sessions })
+        case 'session.create': return reply({ sessionId: 'session-new-1' })
         case 'session.modelCatalog': return reply(window.__MOCK__.models)
         case 'session.follow': {
           const sessionId = frame.p?.sessionId ?? 's1'
