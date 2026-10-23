@@ -108,7 +108,16 @@ export const DEFAULT_CONFIG: LinkConfig = {
     allowedOrigins: [],
   },
   lock: {
-    enabled: true,
+    /*
+     * 默认关闭。
+     *
+     * 这个锁是 MOSS Link 自己的操作门（不是 DSH 的登录屏）。默认开启等于
+     * 给所有用户塞一个他们没要的功能：空闲 10 分钟自动上锁，手机上又没有
+     * 解锁入口，结果就是"我在用 DSH，App 却说主机已锁定"。
+     *
+     * 想要就显式打开：配置 lock.enabled = true 并设置密码。
+     */
+    enabled: false,
     idleMinutes: 10,
     softLockHours: 8,
     maxAttempts: 5,

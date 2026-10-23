@@ -42,7 +42,8 @@ function fakeCtx() {
 
 async function withService(fn, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-link-test-'))
-  const cfg = normalizeConfig({ lock: overrides })
+  // 锁默认是关闭的（见 config.ts），所以测试显式打开它
+  const cfg = normalizeConfig({ lock: { enabled: true, ...overrides } })
   const ctx = fakeCtx()
   const lock = new LockService(ctx, cfg, {
     store: join(dir, 'lock.json'),
@@ -166,7 +167,7 @@ await test('soft 态可读不可写（由 protocol 的策略判定）', async ()
 
 await test('密码落盘后重新加载仍可校验（重启不用重设密码）', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-link-test-'))
-  const cfg = normalizeConfig({})
+  const cfg = normalizeConfig({ lock: { enabled: true } })
   const make = () =>
     new LockService(fakeCtx(), cfg, { store: join(dir, 'lock.json'), audit: join(dir, 'a.jsonl') })
   try {
