@@ -83,8 +83,47 @@ async function runCommand(line: string): Promise<void> {
     uni.showToast({ title: r.text.length > 0 ? r.text.slice(0, 22) : '已执行', icon: 'none' })
     void loadPlan()
   } catch (e) {
-    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 20) : '命令失败', icon: 'none' })
+    handleError(e, '')
   }
+}
+
+/**
+ * 主机锁屏。
+ *
+ * 宿主会在空闲（默认 10 分钟）后自动上锁，之后所有 operator 操作都会被
+ * 拒绝并返回 lock/locked。App 原来只会把错误显示成"主机已锁定"，
+ * 却没有解锁入口——用户被锁在门外却无路可走。
+ */
+function openUnlock(): void {
+  openSheet({
+    kind: 'prompt',
+    title: '主机已锁定',
+    message: '输入电脑上设置的锁屏密码来解锁。任务仍在后台继续运行。',
+    placeholder: '锁屏密码',
+    confirmText: '解锁',
+    onConfirm: (text) => {
+      const link = currentLink()
+      const password = text.trim()
+      if (link === undefined || password.length === 0) return
+      void link.call('lock.unlock', { password }).then(() => {
+        errorText.value = ''
+        uni.showToast({ title: '已解锁', icon: 'none' })
+        void loadPlan()
+      }).catch((e: unknown) => {
+        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 20) : '解锁失败', icon: 'none' })
+      })
+    },
+  })
+}
+
+/** 统一的错误处理：锁屏错误直接弹解锁，其余贴红条。 */
+function handleError(error: unknown, prefix = ''): void {
+  const code = (error as { code?: string } | undefined)?.code
+  if (code === 'lock/locked' || code === 'lock/bad-password') {
+    openUnlock()
+    return
+  }
+  errorText.value = `${prefix}${error instanceof Error ? error.message : String(error)}`
 }
 
 const activeDevice = computed(() => state.devices.find((d) => d.deviceId === state.activeId))
@@ -874,7 +913,7 @@ async function send(): Promise<void> {
       ...(images.length === 0 ? {} : { images }),
     })
   } catch (error) {
-    errorText.value = `发送失败：${error instanceof Error ? error.message : String(error)}`
+    handleError(error, '发送失败：')
   } finally {
     sending.value = false
   }
