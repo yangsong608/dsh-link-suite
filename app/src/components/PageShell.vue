@@ -86,8 +86,27 @@ function go(key: 'devices' | 'sessions' | 'me'): void {
  * 这不是"要滚一下"，是滚到头也还是一半在导航下面。
  * 46 = tab 高度，8 = 上下内边距，再加安全区。
  */
+/*
+ * 底部留白。
+ *
+ * 46 = tab 高度；24 = 视觉呼吸（只留 12 时最后一行会贴在渐变带上，
+ * 浅色主题下看起来像被切掉半截——截图里就出现过）。
+ */
 .page-wrap.has-tab {
-  padding-bottom: calc(46px + 12px + var(--safe-bottom-real, 0px));
+  padding-bottom: calc(46px + 24px + var(--safe-bottom-real, 0px));
+  /*
+   * 必须自己滚。
+   *
+   * 根容器 .dsh 是 overflow:hidden（为了裁掉装饰层溢出），
+   * 所以页面本身不滚动；带底部导航的页面内容一多，
+   * 最后一段会永远留在视口外，滚也滚不到（浅色主题下表现为
+   * 底部说明被 tabbar 压住半行）。
+   */
+  height: 100vh;        /* 老 WebView 兜底 */
+  height: 100dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
 }
 /**
  * 底部导航。
