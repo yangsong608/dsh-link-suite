@@ -12,6 +12,15 @@ import { onLaunch } from '@dcloudio/uni-app'
 import { state, prefs } from '@/core/store'
 
 onLaunch(() => {
+  /*
+   * 启动动画的"已播过"标记必须在**冷启动**时清掉。
+   *
+   * 之前这个标记是 index.vue 里的一个模块级变量。切 tab 用 reLaunch
+   * 会重建页面，模块变量在同一次运行里本该保留——实际观测到的却是
+   * 每次点「设备」都重播一遍。把标记落到 storage 并在这里重置，
+   * 语义就明确成"每次冷启动播一次，进程内不再播"。
+   */
+  try { uni.removeStorageSync('dsh-link/booted') } catch { /* 存储不可用就每次播 */ }
   // 从本地缓存恢复设备表；没有缓存就是空表（首页显示"还没有设备"）。
   // 这里不再塞演示数据：演示数据会让"没连上"看起来像"连上了但没内容"，
   // 是这个阶段最容易误导人的一种"看起来能用"。

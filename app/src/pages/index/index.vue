@@ -24,7 +24,17 @@ import { decodePairUri } from '@dsh-link/protocol'
  * 就变成了阻碍——用户切 tab 是为了看设备列表，不是为了再看一次开机。
  * 用模块级标记：页面重建时模块不重建，所以一次进程生命周期内只播一次。
  */
-let bootPlayed = false
+/*
+ * 启动动画：一次进程生命周期内只播一次。
+ *
+ * 标记放 storage 而不是模块变量：reLaunch 切 tab 会重建页面，
+ * 模块变量在某些平台上会随页面一起重置，表现就是"每点一次设备 tab
+ * 就重播一遍 4.3 秒开机动画"。storage 是进程级的，可靠。
+ * 冷启动时由 App.vue 清掉这个键。
+ */
+let bootPlayed = (() => {
+  try { return uni.getStorageSync('dsh-link/booted') === '1' } catch { return false }
+})()
 const booting = ref(!bootPlayed)
 
 /**
@@ -74,6 +84,16 @@ function metaLine(d: DeviceCard): string {
   if (d.endpoint?.kind) {
     bits.push(d.endpoint.kind === 'lan' ? '局域网' : d.endpoint.kind === 'relay' ? '中继' : d.endpoint.kind === 'tailscale' ? 'Tailscale' : '自定义')
   }
+  /*
+   * 地址要显示在卡片上，不是只藏在详情里。
+   *
+   * 用户最常见的疑问是"我连的到底是哪台机器"——同一台 Mac 有两个网卡时，
+   * IP 是唯一能区分的东西。之前只显示"局域网"，等于没说。
+   */
+  const addr = d.endpoint?.url ?? ''
+  const host = addr.replace(/^wss?:\/\//, '').replace(/\/.*$/, '')
+  if (host.length > 0) bits.push(host)
+
   if (d.conn === 'offline' && typeof d.lastSeen === 'number') {
     bits.push(`上次在线 ${relativeTime(d.lastSeen)}`)
   } else if (typeof d.latencyMs === 'number') {
@@ -134,6 +154,7 @@ function usageLine(d: DeviceCard): string {
 function onBootDone(): void {
   bootPlayed = true
   booting.value = false
+  try { uni.setStorageSync('dsh-link/booted', '1') } catch { /* 存不下就退化成每次播 */ }
 }
 
 function open(d: DeviceCard): void {
