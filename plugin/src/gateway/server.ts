@@ -393,19 +393,33 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
   }, heartbeatMs)
   heartbeat.unref?.()
 
-  await new Promise<void>((resolve, reject) => {
-    const onError = (err: Error): void => {
-      http.off('listening', onListening)
-      reject(err)
-    }
-    const onListening = (): void => {
-      http.off('error', onError)
-      resolve()
-    }
-    http.once('error', onError)
-    http.once('listening', onListening)
-    http.listen(port, host)
-  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => {
+        http.off('listening', onListening)
+        reject(err)
+      }
+      const onListening = (): void => {
+        http.off('error', onError)
+        resolve()
+      }
+      http.once('error', onError)
+      http.once('listening', onListening)
+      http.listen(port, host)
+    })
+  } catch (error) {
+    /*
+     * 启动失败必须把已经做的事收干净。
+     *
+     * 心跳定时器是在 listen 之前建的：不清理的话，每失败一次就漏一个
+     * 永不结束的 interval（自愈循环每 15 秒重试，一小时内能漏几百个）。
+     * HTTP server 也要显式关闭，避免句柄残留。
+     */
+    clearInterval(heartbeat)
+    try { http.close() } catch { /* 已经关了就算了 */ }
+    try { wss.close() } catch { /* 同上 */ }
+    throw error
+  }
 
   const addr = http.address()
   const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port
