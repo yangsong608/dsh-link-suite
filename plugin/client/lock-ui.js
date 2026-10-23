@@ -25,6 +25,9 @@ window.__ModuleLoader__.load({
 
     var state = {
       armed: false,
+      hasPassword: false,
+      /** ready | disabled | no-password —— 决定要不要显示"未武装"提示条 */
+      armedReason: 'no-password',
       locked: false,
       soft: false,
       since: 0,
@@ -112,6 +115,8 @@ window.__ModuleLoader__.load({
         if (out.status !== 200) return
         var was = state.locked
         state.armed = out.body.armed === true
+        state.hasPassword = out.body.hasPassword === true
+        state.armedReason = out.body.armedReason || (state.armed ? 'ready' : 'no-password')
         state.locked = out.body.locked === true
         state.soft = out.body.soft === true
         state.since = out.body.since || 0
@@ -119,7 +124,105 @@ window.__ModuleLoader__.load({
         state.attemptsLeft = out.body.attemptsLeft
         if (state.locked && !was) render()
         if (!state.locked && was) unmount()
+        syncSetupHint()
       }).catch(function () { /* 宿主没起来时静默，下一次再试 */ })
+    }
+
+    // ── 未武装提示 ──────────────────────────────────────────────────────────
+    // 以前这一格是空的：没设密码时锁屏既不生效、界面也不说为什么，
+    // 用户只会以为"这个功能坏了"。现在把原因和下一步直接放在页面上。
+    var HINT_ID = ROOT_ID + '-setup-hint'
+
+    function syncSetupHint() {
+      var existing = document.getElementById(HINT_ID)
+      var needHint = !state.armed && state.armedReason === 'no-password'
+      if (!needHint) {
+        if (existing) existing.remove()
+        return
+      }
+      if (existing) return
+
+      var bar = document.createElement('div')
+      bar.id = HINT_ID
+      bar.setAttribute('role', 'status')
+      bar.style.cssText = [
+        'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:2147483001',
+        'max-width:min(560px,92vw);padding:12px 16px;border-radius:10px',
+        'border:1px solid rgba(232,194,74,.42);background:rgba(28,22,8,.96)',
+        'color:#f0e2b8;font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace',
+        'box-shadow:0 12px 40px rgba(0,0,0,.5);display:flex;gap:12px;align-items:center'
+      ].join(';')
+      bar.innerHTML = [
+        '<span style="flex:none;color:#e8c24a">!</span>',
+        '<span style="flex:1">锁屏未生效：还没有设置密码。</span>',
+        '<button type="button" style="flex:none;height:30px;padding:0 12px;border-radius:6px;cursor:pointer;',
+        'border:1px solid rgba(232,194,74,.5);background:rgba(60,46,12,.9);color:#f0e2b8;',
+        "font:inherit\">设置密码</button>"
+      ].join('')
+      bar.querySelector('button').addEventListener('click', function () {
+        openPasswordSetup(bar)
+      })
+      document.body.appendChild(bar)
+    }
+
+    /** 首次设置密码的极简对话框：只问一个字段，按回车提交。 */
+    function openPasswordSetup(anchor) {
+      if (document.getElementById(ROOT_ID + '-pw')) return
+      var wrap = document.createElement('div')
+      wrap.id = ROOT_ID + '-pw'
+      wrap.style.cssText = [
+        'position:fixed;inset:0;z-index:2147483003;display:grid;place-items:center',
+        'background:rgba(0,0,0,.62)'
+      ].join(';')
+      wrap.innerHTML = [
+        '<div style="width:min(420px,92vw);border-radius:10px;padding:18px;',
+        'border:1px solid rgba(232,194,74,.4);background:#141009;color:#f2eae4;',
+        'font:13px/1.6 ui-monospace,\'SF Mono\',Menlo,monospace">',
+        '<div style="font-size:12px;letter-spacing:.14em;color:rgba(240,226,184,.7);margin-bottom:10px">',
+        'DSH-LINK / 设置锁屏密码</div>',
+        '<input type="password" autocomplete="new-password" placeholder="至少 8 位"',
+        ' style="width:100%;height:40px;padding:0 12px;border-radius:6px;box-sizing:border-box;',
+        'border:1px solid rgba(232,194,74,.35);background:#0b0805;color:#f2eae4;font:inherit;outline:none">',
+        '<div class="err" style="min-height:18px;margin-top:8px;color:#ff8a7e;font-size:12px"></div>',
+        '<div style="display:flex;gap:8px;margin-top:6px">',
+        '<button type="button" class="ok" style="flex:1;height:38px;border-radius:6px;cursor:pointer;',
+        'border:0;background:#e8c24a;color:#201800;font:inherit;font-weight:600">设置</button>',
+        '<button type="button" class="no" style="flex:1;height:38px;border-radius:6px;cursor:pointer;',
+        'border:1px solid rgba(232,194,74,.35);background:transparent;color:#f2eae4;font:inherit">取消</button>',
+        '</div></div>'
+      ].join('')
+
+      document.body.appendChild(wrap)
+      var input = wrap.querySelector('input')
+      var errEl = wrap.querySelector('.err')
+      var close = function () { wrap.remove() }
+      var submit = function () {
+        var value = input.value
+        if (value.length < 8) {
+          errEl.textContent = '密码至少 8 位'
+          return
+        }
+        api('/lock/password', { next: value }).then(function (out) {
+          if (out.status === 200) {
+            close()
+            poll()
+            return
+          }
+          var body = out.body || {}
+          errEl.textContent = body.error ? String(body.error) : '设置失败'
+        }).catch(function () {
+          errEl.textContent = '无法连接主机'
+        })
+      }
+      wrap.querySelector('.ok').addEventListener('click', submit)
+      wrap.querySelector('.no').addEventListener('click', close)
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); submit() }
+      })
+      wrap.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') close()
+      })
+      setTimeout(function () { input.focus() }, 50)
     }
 
     // ── 锁层 ────────────────────────────────────────────────────────────────
@@ -223,9 +326,53 @@ window.__ModuleLoader__.load({
       }
 
       $('.primary', root).addEventListener('click', submit)
-      $('[data-act="request"]', root).addEventListener('click', function () {
+
+      // 远程确认：PC 侧没有第二个人时，这是"人就在这台电脑前"的替代证明。
+      // 原来这里只改一行文案、什么都没发——请求根本没到宿主，必然超时。
+      var requestBtn = $('[data-act="request"]', root)
+      requestBtn.addEventListener('click', function () {
+        if (requestBtn.disabled) return
+        requestBtn.disabled = true
+        requestBtn.textContent = '等待确认…'
         msg.textContent = '已向主机发送解锁请求，请在电脑上确认'
+        // 本机浏览器就是"电脑前的那个人"：直接把这个待确认请求批准掉。
+        // 远程设备（手机）走的是 RPC 的 lock.request，那条路进 pending 表后
+        // 由这个页面轮询 /lock/pending 弹出确认窗。
+        api('/lock/touch').catch(function () { /* 忽略：仅是活动标记 */ })
+        approveSelf()
       })
+
+      /** 本机 owner 的自助批准：取回 pending 里属于自己的那条并批准。 */
+      var approveSelf = function () {
+        api('/lock/pending').then(function (out) {
+          var pending = (out.body && out.body.pending) || []
+          // 本机请求没有 deviceId（owner 直接解锁是不需要审批的），
+          // 所以这里只在确实存在待确认项时替它点确认；否则提示改用密码。
+          if (pending.length === 0) {
+            msg.textContent = '主机没有待确认的请求；请直接输入密码解锁'
+            resetRequest()
+            return
+          }
+          var target = pending[0]
+          api('/lock/request', { deviceId: target.deviceId, approved: true }).then(function (res) {
+            if (res.status === 200 && res.body && res.body.settled) {
+              msg.textContent = '已批准 ' + (target.label || target.deviceId) + ' 的解锁请求'
+            } else {
+              msg.textContent = '确认失败，请重试或直接用密码'
+            }
+            resetRequest()
+            poll()
+          })
+        }).catch(function () {
+          msg.textContent = '无法连接主机，请确认 dsh 仍在运行'
+          resetRequest()
+        })
+      }
+
+      var resetRequest = function () {
+        requestBtn.disabled = false
+        requestBtn.textContent = '请求远程确认'
+      }
 
       // 空闲时刻显示：给"我锁了多久"一个可感知的量
       var started = state.since || Date.now()
@@ -281,6 +428,30 @@ window.__ModuleLoader__.load({
       window.addEventListener('selectstart', swallow, true)
       window.addEventListener('dragstart', swallow, true)
 
+      // ── 活动上报 ──────────────────────────────────────────────────────────
+      // 宿主的空闲计时只认"真的有人在用"：网关 RPC 与这里的上报。
+      // 少了这一段，在 PC 上正常聊天也会在 10 分钟后被锁在门外。
+      // 去抖到 15s 一次：足够让 idleMinutes 有意义，又不会打满回环接口。
+      var lastReport = 0
+      var ACTIVITY_MIN_MS = 15 * 1000
+      var reportActivity = function () {
+        if (document.getElementById(ROOT_ID)) return // 锁着的时候不算活动
+        var now = Date.now()
+        if (now - lastReport < ACTIVITY_MIN_MS) return
+        lastReport = now
+        api('/lock', { action: 'touch' }).catch(function () { /* 宿主没起来时忽略 */ })
+      }
+      var onActivity = function () { reportActivity() }
+      // 只认"开始做一件事"的事件；pointermove / scroll 不算（鼠标划过不代表在用）
+      window.addEventListener('pointerdown', onActivity, true)
+      window.addEventListener('keydown', onActivity, true)
+      window.addEventListener('wheel', onActivity, true)
+      window.addEventListener('touchstart', onActivity, true)
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') onActivity()
+      })
+      reportActivity()
+
       // 有钱能使鬼推磨，但没网络不能解锁：先拉一次，再按 1s 轮询
       poll()
       state.poll = setInterval(poll, POLL_MS)
@@ -288,9 +459,13 @@ window.__ModuleLoader__.load({
       ctx.effect(function () {
         return function () {
           if (state.poll) clearInterval(state.poll)
+          window.removeEventListener('pointerdown', onActivity, true)
+          window.removeEventListener('keydown', onActivity, true)
+          window.removeEventListener('wheel', onActivity, true)
+          window.removeEventListener('touchstart', onActivity, true)
           unmount()
         }
-      }, 'dsh-link: lock overlay')
+      }, 'dsh-link: lock overlay + activity')
     }
 
     exports.apply = apply

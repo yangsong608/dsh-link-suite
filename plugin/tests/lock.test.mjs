@@ -208,7 +208,7 @@ await test('未锁时远程请求直接为 true', async () => {
   })
 })
 
-await test('锁定时远程请求由 PC 侧 settle 决定', async () => {
+await test('锁定时远程请求由 PC 侧 settle 决定，并签发票据', async () => {
   await withService(async ({ lock, ctx }) => {
     await lock.setPassword('correct-horse')
     lock.lock('manual')
@@ -218,9 +218,38 @@ await test('锁定时远程请求由 PC 侧 settle 决定', async () => {
       ctx.events.some(([name]) => name === 'dsh-link/lock-request'),
       'PC 侧要能收到弹窗事件',
     )
-    assert.equal(lock.settleRemote('dev_1', true), true)
+
+    // 待确认列表要能给出"谁在请求"——PC 确认窗要显示 iPhone 15，而不是 dev_1
+    const waiting = lock.pendingRequests()
+    assert.equal(waiting.length, 1)
+    assert.equal(waiting[0].deviceId, 'dev_1')
+    assert.equal(waiting[0].label, 'iPhone 15')
+
+    const settled = lock.settleRemote('dev_1', true)
+    assert.equal(settled.settled, true)
+    assert.equal(typeof settled.ticket, 'string', '批准时必须给该设备签发一张票据')
+    assert.ok(settled.expiresAt > Date.now())
     assert.equal(await pending, true)
     assert.equal(lock.get().locked, false, '批准后应解锁')
+
+    // 票据必须绑定这台设备，换一台不行
+    assert.equal(lock.acceptTicket(settled.ticket, 'dev_1'), true)
+    assert.equal(lock.acceptTicket(settled.ticket, 'dev_other'), false)
+    // 待确认列表已清空
+    assert.equal(lock.pendingRequests().length, 0)
+  })
+})
+
+await test('拒绝远程请求：不解锁、不发票据、列表清空', async () => {
+  await withService(async ({ lock }) => {
+    await lock.setPassword('correct-horse')
+    lock.lock('manual')
+    const pending = lock.requestRemote('dev_2', 'iPad', 5000)
+    const settled = lock.settleRemote('dev_2', false)
+    assert.equal(settled.settled, true)
+    assert.equal(settled.ticket, undefined, '拒绝不能发票据')
+    assert.equal(await pending, false)
+    assert.equal(lock.get().locked, true, '拒绝后必须保持锁定')
   })
 })
 

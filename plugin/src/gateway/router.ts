@@ -15,6 +15,8 @@ import type { LockService } from '../lock/index.js'
 
 export interface CallMeta {
   readonly deviceId: string
+  /** 配对时记录的展示名（"iPhone 15"）。未配对连接为 undefined。 */
+  readonly label?: string
   readonly role: keyof typeof ROLE_ORDER
   readonly remoteAddress: string
 }
@@ -81,10 +83,14 @@ export function createHandlers(): GatewayHandlers {
     },
 
     'lock.request': async (rc, _p, meta) => {
+      // 语义：本机允许"已配对设备直接输密码解锁"时，不该再走远程审批这条路——
+      // 那条路的前提是设备自己没法解。原实现条件写对了但文案与错误码都反了
+      //（条件是"允许"，文案却说"不允许"，错误码还是 no-password-set），
+      // 手机端会显示成"未设置密码"，用户完全没法据此行动。
       if (rc.cfg.lock.allowDeviceUnlock) {
-        throw new RpcError('lock/no-password-set', '本机配置为不允许设备直接解锁，请使用密码')
+        throw new RpcError('lock/use-password', '本机允许已配对设备直接输密码解锁，请使用密码')
       }
-      const ok = await rc.lock.requestRemote(meta.deviceId, meta.deviceId)
+      const ok = await rc.lock.requestRemote(meta.deviceId, meta.label ?? meta.deviceId)
       if (!ok) throw new RpcError('lock/request-timeout', '主机未在 30 秒内确认')
       return { unlocked: true }
     },

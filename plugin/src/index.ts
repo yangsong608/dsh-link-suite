@@ -156,7 +156,15 @@ function makeHttpHandler(lock: LockService, gateway: Gateway | undefined) {
 
     try {
       if (url.pathname === '/dsh-link/lock' && req.method === 'GET') {
-        json(200, { ...lock.get(), armed: lock.armed, connections: gateway?.connections ?? 0 })
+        json(200, {
+          ...lock.get(),
+          armed: lock.armed,
+          hasPassword: lock.hasPassword,
+          // 没密码时 tell the client 为什么没锁——比只回 armed:false 有用得多，
+          // 否则浏览器半只能显示"未锁定"，用户不知道是没开还是没配。
+          armedReason: lock.armed ? 'ready' : lock.hasPassword ? 'disabled' : 'no-password',
+          connections: gateway?.connections ?? 0,
+        })
         return
       }
 
@@ -194,11 +202,70 @@ function makeHttpHandler(lock: LockService, gateway: Gateway | undefined) {
         return
       }
 
+      // ── 密码生命周期 ────────────────────────────────────────────────────
+      // 这三条是"锁屏能不能用"的开关。原来 setPassword() 只有测试在调，
+      // 于是锁屏从装上那刻起就是未武装状态——功能等于不存在。
+      if (url.pathname === '/dsh-link/lock/password' && req.method === 'POST') {
+        const body = await readJson(req)
+        const next = body['next']
+        const current = body['current']
+        if (typeof next !== 'string' || next.length < 8) {
+          json(400, { error: '密码至少 8 位', code: 'lock/weak-password' })
+          return
+        }
+        try {
+          if (lock.hasPassword) {
+            if (typeof current !== 'string') {
+              json(400, { error: '变更密码需要提供当前密码', code: 'lock/bad-args' })
+              return
+            }
+            await lock.changePassword(current, next)
+          } else {
+            await lock.setPassword(next)
+          }
+          json(200, { ok: true, armed: lock.armed })
+        } catch (e) {
+          const err = e as { code?: string; message?: string; details?: Record<string, unknown> }
+          json(401, { error: err.message ?? 'setting password failed', code: err.code, details: err.details })
+        }
+        return
+      }
+
+      if (url.pathname === '/dsh-link/lock/password' && req.method === 'DELETE') {
+        const body = await readJson(req)
+        const current = body['current']
+        if (!lock.hasPassword) {
+          json(200, { ok: true, armed: false })
+          return
+        }
+        if (typeof current !== 'string') {
+          json(400, { error: '清除密码需要提供当前密码', code: 'lock/bad-args' })
+          return
+        }
+        try {
+          // 先验后清：clearPassword 本身不校验，直接把验证放在这里，
+          // 避免任何一个能打到回环端口的进程把锁拆掉。
+          lock.unlock(current, 'owner')
+          await lock.clearPassword()
+          json(200, { ok: true, armed: false })
+        } catch (e) {
+          const err = e as { code?: string; message?: string; details?: Record<string, unknown> }
+          json(401, { error: err.message ?? 'clear password failed', code: err.code, details: err.details })
+        }
+        return
+      }
+
+      // PC 侧轮询待确认的远程解锁请求（浏览器半据此弹确认窗）。
+      if (url.pathname === '/dsh-link/lock/pending' && req.method === 'GET') {
+        json(200, { pending: lock.pendingRequests() })
+        return
+      }
+
       if (url.pathname === '/dsh-link/lock/request' && req.method === 'POST') {
         const body = await readJson(req)
         const deviceId = String(body['deviceId'] ?? '')
         const approved = body['approved'] === true
-        json(200, { settled: lock.settleRemote(deviceId, approved) })
+        json(200, lock.settleRemote(deviceId, approved))
         return
       }
 

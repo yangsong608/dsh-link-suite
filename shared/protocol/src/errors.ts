@@ -26,6 +26,8 @@ export const ERROR_CODES = [
   'lock/bad-password',
   'lock/rate-limited', // 尝试次数超限，带 retryAfterMs
   'lock/no-password-set',
+  /** 本机允许已配对设备直接输密码解锁，远程审批这条路不适用（提示改用密码）。 */
+  'lock/use-password',
   'lock/request-timeout',
 
   // 会话
