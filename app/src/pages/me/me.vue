@@ -167,7 +167,11 @@ function about(): void {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0 16px 8px;
+  padding-right: 16px;
+  padding-bottom: 8px;
+  padding-left: 16px;
+  /* 刻意不用 padding 简写：简写会把 padding-top 重置为 0，
+     覆盖掉 .head 上的 .safe-top（状态栏安全区）。 */
 }
 
 .h1 { font-size: 21px; font-weight: 700; }

@@ -373,10 +373,35 @@
  *
  * 用 max() 而不是相加：状态栏高度本来就包含在安全区里，相加会导致顶部过高。
  */
+/**
+ * 安全区变量。
+ *
+ * `--sb-top` 的取值顺序是有讲究的：
+ *   1. 优先用 documentElement 上的内联自定义属性——App.vue 的 onLaunch 里
+ *      用 getSystemInfoSync().statusBarHeight 实测后 setProperty 写上去的。
+ *      这是**唯一可靠**的来源：真机上 --status-bar-height 常是 0。
+ *   2. 退到 --status-bar-height（H5 / nvue 场景可能被注入）。
+ *   3. 再退到 env()（刘海屏 H5）。
+ *
+ * 注意不要在 .dsh 上再声明一次 --sb-top：那会覆盖 documentElement 上的值
+ * （CSS 自定义属性按最近的声明生效），让 JS 写的值失效——这正是上一版
+ * "改了还是不生效"的原因。
+ */
 .dsh {
-  --sb-top: var(--status-bar-height, 0px);
-  --safe-top-real: max(var(--sb-top), env(safe-area-inset-top), 24px);
+  --safe-top-real: max(
+    var(--sb-top, 0px),
+    var(--status-bar-height, 0px),
+    env(safe-area-inset-top),
+    24px
+  );
   --safe-bottom-real: max(env(safe-area-inset-bottom), 8px);
+
+  /* 状态栏安全区直接给根节点，而不是只给各页面的 .head。
+     理由：靠每个页面记得加 .safe-top 是靠不住的——已经出现过页面自己的
+     padding 简写把它覆盖掉的情况。根节点统一顶开，任何页面都不会被压。
+     底部不加：tabbar 是 fixed 定位且自带内边距，加在根上会多出一截空白。 */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-top: var(--safe-top-real);
 }
 
 /**
@@ -390,7 +415,11 @@
  *
  * :global() 让这个类不参与 scoped 改写，才能从任意页面引用。
  */
-:global(.safe-top) { padding-top: calc(var(--safe-top-real) + 8px); }
+/**
+ * `.safe-top` 现在只负责**呼吸间距**，不再负责顶开状态栏——那件事由 .dsh
+ * 根节点的 padding-top 统一处理。两处都做会导致顶部空白翻倍。
+ */
+:global(.safe-top) { padding-top: 8px; }
 :global(.safe-bottom) { padding-bottom: calc(var(--safe-bottom-real) + 8px); }
 
 /**

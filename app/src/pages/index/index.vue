@@ -398,7 +398,11 @@ onLoad(() => {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  padding: 0 16px 6px;
+  padding-right: 16px;
+  padding-bottom: 6px;
+  padding-left: 16px;
+  /* 刻意不用 padding 简写：简写会把 padding-top 重置为 0，
+     覆盖掉 .head 上的 .safe-top（状态栏安全区）。 */
 }
 
 .brand { display: flex; align-items: baseline; gap: 8px; }
