@@ -55,6 +55,10 @@ export interface RouteContext {
     | {
         authenticate(connId: string, deviceId: string, role: DeviceRole, label: string): boolean
         disconnectDevice(deviceId: string): number
+        /** 向所有已认证连接广播（状态同步用）。 */
+        broadcast(method: string, payload: unknown): void
+        /** 当前在线的设备 id。 */
+        onlineDeviceIds(): readonly string[]
       }
     | undefined
   /** 会话事件订阅表（follow 打开后由 server 推帧）。M1 可缺省。 */
@@ -204,7 +208,19 @@ export function createHandlers(): GatewayHandlers {
       return { deviceId: device.deviceId, role: device.role, label: device.label, token }
     },
 
-    'device.list': async (rc) => ({ devices: rc.devices.list() }),
+    'device.list': async (rc) => {
+      /*
+       * 每条设备带上 online。
+       *
+       * 宿主是唯一知道"这台设备此刻有没有连接"的地方；
+       * 之前不下发，客户端只能把非当前设备一律当成"状态未知"，
+       * 于是列表里其他电脑永远显示成同一个样子。
+       */
+      const online = new Set(rc.gateway()?.onlineDeviceIds() ?? [])
+      return {
+        devices: rc.devices.list().map((d) => ({ ...d, online: online.has(d.deviceId) })),
+      }
+    },
 
     'device.rename': async (rc, p) => {
       const deviceId = str(p, 'deviceId')

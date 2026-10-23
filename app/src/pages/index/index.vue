@@ -62,6 +62,8 @@ const otherDevices = computed(() =>
 const rootClass = computed(() => ['dsh', skinClass.value, themeClass.value, liteClass.value])
 
 function statusOf(d: DeviceCard): 'online' | 'connecting' | 'offline' | 'needs-auth' | 'locked' {
+  // 非当前连接的设备没有本地连接状态，用宿主下发的 online 判断
+  if (d.conn !== 'online' && d.online === false) return 'offline'
   if (d.conn === 'offline') return 'offline'
   if (d.conn === 'needs-auth') return 'needs-auth'
   if (d.conn === 'connecting') return 'connecting'

@@ -24,6 +24,11 @@ export interface DeviceCard extends DeviceInfo {
    * 没有它就无法连接——首页据此显示"需要重新配对"。
    */
   endpoint?: { url: string; kind: 'lan' | 'relay' | 'tailscale' | 'custom' }
+  /**
+   * 宿主下发的真实在线状态（有已认证连接即为 true）。
+   * 客户端自己只知道"当前连接的那台"，其它设备只能靠这个字段。
+   */
+  online?: boolean
 }
 
 /** 会话行（列表页用；字段与协议 SessionSummary 对齐）。 */
@@ -157,6 +162,11 @@ interface PersistedDevice {
   createdAt: number
   lastSeen: number
   endpoint?: { url: string; kind: 'lan' | 'relay' | 'tailscale' | 'custom' }
+  /**
+   * 宿主下发的真实在线状态（有已认证连接即为 true）。
+   * 客户端自己只知道"当前连接的那台"，其它设备只能靠这个字段。
+   */
+  online?: boolean
 }
 
 ;(function loadDevices() {

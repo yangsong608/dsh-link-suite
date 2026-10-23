@@ -104,6 +104,8 @@ export interface Gateway {
   readonly authenticatedConnections: number
   /** 某条连接属于哪台设备（审批归属校验用）。 */
   deviceOf(connId: string): string | undefined
+  /** 当前在线的设备 id 集合（有已认证连接即算在线）。 */
+  onlineDeviceIds(): readonly string[]
   readonly connections: number
 }
 
@@ -424,6 +426,13 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       let count = 0
       for (const conn of conns.values()) if (conn.authenticated) count += 1
       return count
+    },
+    onlineDeviceIds() {
+      const ids: string[] = []
+      for (const conn of conns.values()) {
+        if (conn.authenticated && typeof conn.deviceId === 'string') ids.push(conn.deviceId)
+      }
+      return ids
     },
     deviceOf(connId) {
       const conn = conns.get(connId)

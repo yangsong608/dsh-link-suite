@@ -117,6 +117,27 @@ export function createSubscriptionHub(deps: Deps): SubscriptionHub {
     return item
   }
 
+  /*
+   * 会话状态广播（不属于任何订阅）。
+   *
+   * 之前只有 trace/stream 走订阅推送，**会话的"在跑/空闲"完全靠客户端
+   * 自己刷新列表**。用户在手机上看列表时，电脑上跑完了他也不知道。
+   * 这里在轮次边界向所有已认证连接广播一条极小的状态帧。
+   */
+  deps.ctx.on('session/event', (session: unknown, event: unknown) => {
+    const hostSession = session as { id?: unknown } | undefined
+    const sessionId = typeof hostSession?.id === 'string' ? hostSession.id : undefined
+    const type = (event as { type?: unknown } | undefined)?.type
+    if (sessionId === undefined) return
+    if (type === 'turn/start' || type === 'turn/end') {
+      deps.broadcast('session.status', {
+        sessionId,
+        running: type === 'turn/start',
+        at: Date.now(),
+      })
+    }
+  })
+
   // 会话事件 → trace → 每个订阅者
   deps.ctx.on('session/event', (session: unknown, event: unknown) => {
     const hostSession = session as { id?: unknown } | undefined
