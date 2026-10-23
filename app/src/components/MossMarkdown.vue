@@ -44,6 +44,18 @@ function cls(seg: Inline): string {
 
       <view v-else-if="b.t === 'hr'" class="hr" />
 
+      <!-- dsh-ui fence：本端不实现 genui 组件集，给一张说明卡而不是糊一屏 JSON -->
+      <view v-else-if="b.t === 'genui'" class="genui">
+        <view class="genui-head">
+          <text class="genui-badge mono">GENUI</text>
+          <text class="genui-t">结构化 UI</text>
+        </view>
+        <text class="genui-d">电脑端 DSH 已把它渲染成可交互组件；手机端暂以文字呈现，可在电脑上查看。</text>
+        <scroll-view class="genui-raw" scroll-y scroll-x>
+          <text class="genui-code mono">{{ b.raw.length > 400 ? b.raw.slice(0, 400) + '…' : b.raw }}</text>
+        </scroll-view>
+      </view>
+
       <view v-else-if="b.t === 'quote'" class="quote">
         <text v-for="(s, j) in segments(b.inline)" :key="j" class="q-text" :class="cls(s)">{{ s.v }}</text>
       </view>
@@ -160,4 +172,27 @@ function cls(seg: Inline): string {
 .q-text { font-size: 13px; line-height: 1.6; color: var(--t2); }
 
 .hr { height: 1px; margin: 12px 0; background: var(--bd); }
+
+/* genui 降级卡：明确"有内容但我渲染不了"，而不是假装它是普通代码 */
+.genui {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: var(--s1);
+}
+
+.genui-head { display: flex; align-items: center; gap: 7px; }
+.genui-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--acc-soft);
+  color: var(--acc);
+  letter-spacing: 0.6px;
+}
+.genui-t { font-size: 12px; color: var(--t1); }
+.genui-d { display: block; margin-top: 6px; font-size: 11px; line-height: 16px; color: var(--t3); }
+.genui-raw { max-height: 96px; margin-top: 8px; }
+.genui-code { font-size: 10.5px; line-height: 15px; color: var(--t3); white-space: pre; }
 </style>

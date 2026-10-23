@@ -30,6 +30,14 @@ export type Block =
   | { readonly t: 'ol'; readonly items: readonly (readonly Inline[])[]; readonly start: number }
   | { readonly t: 'quote'; readonly inline: readonly Inline[] }
   | { readonly t: 'hr' }
+  /**
+   * `dsh-ui` fence（dsh-genui 插件的结构化 UI 规格）。
+   *
+   * 我们不实现它的 30+ 组件集，但也不能把几百行 JSON 当代码块糊在聊天里——
+   * 那正是 genui README 说的"插件缺失时应优雅降级"的反面。这里单独成块，
+   * 由渲染层给一张说明卡。
+   */
+  | { readonly t: 'genui'; readonly raw: string }
 
 /** 解析行内标记。顺序很重要：代码优先，否则 `**` 之类会误判。 */
 export function parseInline(src: string): Inline[] {
@@ -125,7 +133,13 @@ export function parseMarkdown(src: string): Block[] {
       }
       // 跳过收尾的 ```
       if (i < lines.length) i += 1
-      blocks.push({ t: 'code', lang, text: body.join('\n') })
+      const text = body.join('\n')
+      // dsh-ui：结构化 UI 规格，交给渲染层做降级说明，不按普通代码块处理
+      if (lang.toLowerCase() === 'dsh-ui') {
+        blocks.push({ t: 'genui', raw: text })
+      } else {
+        blocks.push({ t: 'code', lang, text })
+      }
       continue
     }
 
