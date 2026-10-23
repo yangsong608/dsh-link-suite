@@ -1346,6 +1346,19 @@ onUnmounted(() => {
 }
 
 /*
+ * 竖屏也要有确定高度，否则整页会跟着滚：头部与输入框被滚走，
+ * 用户看到的"只有内容该滚动"就变成了"整页滚动"。
+ * 根固定 100dvh + 中间 flow 内部滚动 = 头尾钉住。
+ */
+.dsh {
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/*
  * 三栏（≥1000px）：
  *   左 240 会话列表 | 中 flex 对话 | 右 300 产物
  * 窄屏时 .wide 不生效，chat-main 独占整屏，布局与原来一致。
