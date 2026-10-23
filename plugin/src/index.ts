@@ -222,20 +222,16 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
   /** 网关运行状态（启动失败原因给设置页看）。 */
   const gwState: { gatewayError?: string } = {}
 
-  if (cfg.gateway.enabled) {
+  /*
+   * 启动网关。抽成函数是为了能被**自愈循环**重复调用：
+   * 首次启动失败（典型是重启时端口还没释放）不应该让远程访问一直废到下次重启。
+   */
+  const startGatewayOnce = async (): Promise<void> => {
     try {
       const host = bindHost(cfg.gateway.bind)
       // 绑 0.0.0.0 时必须给出"允许哪些本机地址被连"的白名单，
       // 否则监听会落到 VPN / 公网网卡上。loopback 模式不需要白名单。
       const allowedLocal = cfg.gateway.bind === 'loopback' ? undefined : lanAddresses()
-      /*
-       * 端口被占用时重试几次。
-       *
-       * 真实场景：用户重启 DSH 时旧进程可能还占着 7443 一小会儿，
-       * 新实例 bind 直接 EADDRINUSE → 网关静默降级（HTTP 面正常、
-       * WebSocket 端口不通），表现就是"App 连不上了，但设置页还打得开"。
-       * 这种几百毫秒的窗口值得等，而不是把远程访问整个小时都废掉。
-       */
       gateway = await startGatewayWithRetry({
         rc,
         handlers: createHandlers(),
@@ -245,15 +241,13 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
         allowedOrigins: cfg.gateway.allowedOrigins,
         allowedLocalAddresses: allowedLocal,
       }, ctx)
+      if (gwState.gatewayError !== undefined) {
+        ctx.logger?.info?.('[dsh-link] 网关于自愈后恢复监听 %d', cfg.gateway.port)
+      }
       gwState.gatewayError = undefined
-      // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
-      ctx.on('dsh-link/lock-changed', (state) => {
-        gateway?.broadcast('lock.changed', state as LockState)
-      })
     } catch (error) {
       // 端口占用、网卡取不到、权限不足——这些都是"远程访问不可用"，
-      // 不是"锁屏不可用"。原来没有 try/catch，一个可选子系统的失败
-      // 会把整个插件（包括与端口无关的锁屏）一起拖死。
+      // 不是"锁屏不可用"。
       const reason = error instanceof Error ? `${(error as { code?: string }).code ?? ''} ${error.message}`.trim() : String(error)
       ctx.logger?.error(
         '[dsh-link] 网关启动失败，远程访问已降级（锁屏不受影响）：%s',
@@ -270,13 +264,40 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     }
   }
 
+  if (cfg.gateway.enabled) {
+    await startGatewayOnce()
+
+    // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
+    ctx.on('dsh-link/lock-changed', (state) => {
+      gateway?.broadcast('lock.changed', state as LockState)
+    })
+
+    /*
+     * 自愈循环。
+     *
+     * 首次启动可能因为端口竞争、网卡还没就绪而失败。原来失败了就降级到
+     * 下次重启——用户侧表现是"App 连不上，但设置页一切正常"，且无解。
+     *
+     * 现在每 15 秒检查一次：网关不在就重新拉起。代价是一次定时器；
+     * 收益是即使启动时机不巧，也能在十几秒内自己恢复。
+     */
+    const HEAL_INTERVAL_MS = 15_000
+    const healTimer = setInterval(() => {
+      if (gateway !== undefined) return
+      void startGatewayOnce()
+    }, HEAL_INTERVAL_MS)
+    // 定时器不能阻止进程退出
+    ;(healTimer as unknown as { unref?: () => void }).unref?.()
+    ctx.effect(() => () => clearInterval(healTimer), 'dsh-link: gateway self-heal')
+  }
+
   // ── 本机 HTTP 面（给浏览器里的锁屏层用）─────────────────────────────────
   const webServer = ctx.get<WebServerService>('webServer', false)
   if (webServer !== undefined) {
     const off = webServer.register({
       kind: 'prefix',
       path: '/dsh-link',
-      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId, relay, recomputeEndpoints, gwState),
+      handler: makeHttpHandler(lock, () => gateway, devices, cfg, hostId, relay, recomputeEndpoints, gwState),
     })
     ctx.effect(() => () => off(), 'dsh-link: http routes')
   }
@@ -319,7 +340,7 @@ interface RelayState {
 
 function makeHttpHandler(
   lock: LockService,
-  gateway: Gateway | undefined,
+  getGateway: () => Gateway | undefined,
   devices: DeviceRegistry,
   cfg: LinkConfig,
   hostId: string,
@@ -366,7 +387,7 @@ function makeHttpHandler(
           // 没密码时 tell the client 为什么没锁——比只回 armed:false 有用得多，
           // 否则浏览器半只能显示"未锁定"，用户不知道是没开还是没配。
           armedReason: lock.armed ? 'ready' : lock.hasPassword ? 'disabled' : 'no-password',
-          connections: gateway?.connections ?? 0,
+          connections: getGateway()?.connections ?? 0,
         })
         return
       }
@@ -530,7 +551,7 @@ function makeHttpHandler(
           relayUrl: relay.relayUrl ?? null,
           endpoints: relay.endpoints,
           // 当前监听的局域网端口，方便用户拼自己的反代地址
-          port: gateway?.port ?? cfg.gateway.port,
+          port: getGateway()?.port ?? cfg.gateway.port,
         })
         return
       }
@@ -589,7 +610,7 @@ function makeHttpHandler(
           json(404, { error: '设备不存在' })
           return
         }
-        gateway?.disconnectDevice(revoked)
+        getGateway()?.disconnectDevice(revoked)
         json(200, { revoked, deviceId: revoked })
         return
       }
