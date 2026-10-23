@@ -1,0 +1,23 @@
+{
+  "name": "dsh-link-suite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Link 工程根：三份子工程的构建与检查入口（不装运行时依赖）",
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "check:fast": "node scripts/check.mjs --skip-app-build",
+    "build:protocol": "npm --prefix shared/protocol run build",
+    "test:protocol": "npm --prefix shared/protocol test",
+    "build:plugin": "npm --prefix plugin run build",
+    "test:plugin": "npm --prefix plugin test",
+    "typecheck:app": "npm --prefix app run typecheck",
+    "build:app": "npm --prefix app run build:h5",
+    "install:all": "npm --prefix shared/protocol ci && npm --prefix plugin ci && npm --prefix app ci",
+    "shots": "cd docs/prototype && node capture.mjs",
+    "shots:app": "cd docs/prototype && node shot-app.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
