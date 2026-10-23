@@ -319,6 +319,7 @@ function deviceMenu(d: DeviceCard): void {
     items: [
       { label: '重命名', hint: '改的是本机显示名，不影响电脑' },
       { label: '查看详情', hint: '设备 ID / 地址 / 状态' },
+      { label: '重新连接', hint: '断线后手动重连（不动配对关系）' },
       { label: '修改地址', hint: '电脑换了 IP 或端口时用这个' },
       { label: '断开连接', hint: '只是断线，配对关系保留' },
       { label: '移除设备', hint: '需要重新配对才能再连', danger: true },
@@ -416,6 +417,27 @@ function editEndpoint(d: DeviceCard): void {
       if (next !== undefined) connectDevice(next)
     },
   })
+}
+
+/**
+ * 手动重连。
+ *
+ * 为什么需要单独的入口：连接对象对同一地址是幂等的（已连接就直接返回），
+ * 所以"再点一次"不会真的重建 socket。断线后想强制重来，必须先关掉旧连接。
+ *
+ * 这是旧包缺失的能力：没自动重连、也没有手动入口，一旦掉线只能改地址或重扫。
+ */
+function reconnectDevice(d: DeviceCard): void {
+  haptic('medium')
+  // 强制断开（走 manual 版，避免被自动重连抢先）
+  disconnectManual()
+  const idx = state.devices.findIndex((x) => x.deviceId === d.deviceId)
+  if (idx >= 0) {
+    const cur = state.devices[idx]
+    if (cur !== undefined) state.devices[idx] = { ...cur, conn: 'connecting' }
+  }
+  const next = state.devices[idx]
+  if (next !== undefined) connectDevice(next)
 }
 
 function disconnectManualDevice(d: DeviceCard): void {
