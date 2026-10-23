@@ -583,7 +583,20 @@ export function createHandlers(): GatewayHandlers {
     // 诚实标注：只覆盖文件工具的写入/编辑，不含 shell 产生的变更、二进制文件、
     // 纯 git 变更（提交/删除/重命名）。响应里带 approximate: true 与说明。
     'session.changes': async (rc, p) => {
-      const events = await collectSessionEvents(rc, str(p, 'sessionId'))
+      const sessionId = str(p, 'sessionId')
+      const events = await collectSessionEvents(rc, sessionId)
+
+      // 首选：宿主自己的 changes 投影（准确、含 git 与 shell 改动）
+      const hostFiles = await readHostChanges(rc, sessionId, events)
+      if (hostFiles !== undefined) {
+        return {
+          files: hostFiles.files,
+          approximate: false,
+          note: hostFiles.note,
+        }
+      }
+
+      // 兜底：从事件里的文件工具记录拼（近似）
       const files = buildChanges(events)
       return {
         files,
@@ -1145,4 +1158,61 @@ async function assertInside(root: string, target: string): Promise<string> {
     throw new RpcError('auth/forbidden', '路径不在工作区内')
   }
   return realTarget
+}
+
+/** 宿主 changes 投影的最小形状（dsh 的 workspace-changes 契约）。 */
+interface HostChangesService {
+  summary?(
+    sessionId: string,
+    seq: number,
+  ): Promise<{ turn: number; files: { path: string; display?: string; added?: number; deleted?: number; binary?: boolean }[] } | undefined> | {
+    turn: number
+    files: { path: string; display?: string; added?: number; deleted?: number; binary?: boolean }[]
+  } | undefined
+}
+
+/**
+ * 读宿主自己的文件改动投影。
+ *
+ * 为什么要走它：会话事件里的 `tool/result` **不带 meta.diffs**
+ * （真机实测 35/35 帧都没有），所以只靠事件永远得不出产物列表——
+ * 用户看到的就是"横屏右侧产物一直是空的"。
+ *
+ * dsh 的 `workspaceChanges.summary(sessionId, seq)` 才是权威来源：
+ * 它在 turn 开始时给工作区拍快照，结束时对比，连 shell 改动都算得出来。
+ *
+ * seq 用本轮最后一个事件的序号：summary 关心的是"哪一次公告的总结"，
+ * 拿最新事件去问等价于"最新一轮的改动"。
+ */
+async function readHostChanges(
+  rc: RouteContext,
+  sessionId: string,
+  events: readonly unknown[],
+): Promise<{ files: { path: string; op: string; additions?: number; deletions?: number }[]; note: string } | undefined> {
+  const service = rc.ctx.get<HostChangesService>('workspaceChanges', false)
+  if (service?.summary === undefined) return undefined
+
+  let lastSeq = 0
+  for (const raw of events) {
+    const seq = (raw as { seq?: unknown } | undefined)?.seq
+    if (typeof seq === 'number' && seq > lastSeq) lastSeq = seq
+  }
+  if (lastSeq === 0) return undefined
+
+  try {
+    const summary = await service.summary(sessionId, lastSeq)
+    if (summary === undefined) return undefined
+    return {
+      files: (summary.files ?? []).map((f) => ({
+        path: f.display ?? f.path,
+        op: 'mod',
+        additions: f.added ?? 0,
+        deletions: f.deleted ?? 0,
+      })),
+      note: `宿主工作区对比（第 ${summary.turn} 轮）；含 git 与 shell 改动`,
+    }
+  } catch {
+    // 投影不可用（会话太旧 / 插件未启用）就退回事件拼装
+    return undefined
+  }
 }
