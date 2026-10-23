@@ -19,6 +19,11 @@ export type AuditEvent =
   | { ev: 'device.paired'; deviceId: string; label: string }
   | { ev: 'device.revoked'; deviceId: string }
   | { ev: 'plugin.install'; name: string; ok: boolean }
+  /** 密码生命周期。只记事件，永不记密码本身或它的 hash。 */
+  | { ev: 'password.set'; first: boolean }
+  | { ev: 'password.clear' }
+  /** 空闲判定落入软锁或硬锁时，记下当时的依据（有没有运行中的会话）。 */
+  | { ev: 'lock.idle'; reason: 'idle'; running: number }
 
 export interface AuditRecord extends Record<string, unknown> {
   t: string

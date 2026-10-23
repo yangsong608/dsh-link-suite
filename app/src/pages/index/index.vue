@@ -12,8 +12,8 @@ import PageShell from '@/components/PageShell.vue'
 import MossTerm from '@/components/moss/MossTerm.vue'
 import MossBoot from '@/components/moss/MossBoot.vue'
 import { state, activeDevice, skinClass, themeClass, liteClass, type DeviceCard } from '@/core/store'
-import { demoDevices } from '@/core/demo'
 import { haptic } from '@/core/haptic'
+import { connectDevice, refreshAll } from '@/core/link'
 
 const booting = ref(true)
 const refreshing = ref(false)
@@ -88,9 +88,102 @@ async function refresh(): Promise<void> {
   refreshing.value = false
 }
 
+/**
+ * 配对面板。
+ *
+ * 流程是「电脑出码 → 手机输码」，不是反的：
+ *   1. 在电脑上打开 dsh-link 设置，点「生成配对码」——这个动作本身
+ *      就是"本人在场"的证明，所以宿主那边会直接预批准
+ *   2. 手机输入这 6 位码
+ *   3. 手机拿到 bearer token，之后靠它认证
+ *
+ * 手机端**不**自己发起 pair.start：那会生成一个电脑不知情的码，
+ * 除非有人在电脑上再确认一次，否则流程走不通。
+ */
+const pairOpen = ref(false)
+const pairError = ref('')
+const pairBusy = ref(false)
+const pairInput = ref('')
+const pairAddress = ref('')
+
+/** 还没配对过、也没有缓存地址时需要用户手填一次。 */
+const needsAddress = computed(() => {
+  const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
+  return device?.endpoint?.url === undefined
+})
+
 function addDevice(): void {
   haptic('medium')
-  uni.showToast({ title: '配对：扫码 → 比对 6 位指纹 → 输密码', icon: 'none' })
+  pairOpen.value = true
+  pairError.value = ''
+  pairInput.value = ''
+}
+
+function closePair(): void {
+  pairOpen.value = false
+  pairBusy.value = false
+  pairError.value = ''
+}
+
+async function finishPair(): Promise<void> {
+  const code = pairInput.value.trim()
+  if (!/^\d{6}$/.test(code)) {
+    pairError.value = '请输入电脑上显示的 6 位数字'
+    return
+  }
+
+  // 连接目标：优先当前选中的设备；首次配对则用用户填的地址建一条临时连接
+  let device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
+  if (device === undefined) {
+    const url = pairAddress.value.trim()
+    if (!/^wss?:\/\//.test(url)) {
+      pairError.value = '请填写电脑地址，例如 ws://192.168.1.23:7443/dshlink'
+      return
+    }
+    device = {
+      deviceId: `tmp_${Date.now()}`,
+      name: '未命名电脑',
+      platform: 'desktop',
+      role: 'operator',
+      createdAt: Date.now(),
+      lastSeen: Date.now(),
+      conn: 'connecting',
+      endpoint: { url, kind: 'lan' },
+    }
+    state.devices = [...state.devices, device]
+    state.activeId = device.deviceId
+  }
+  const link = connectDevice(device)
+  if (link === undefined) {
+    pairError.value = '无法连接电脑，请确认地址正确且在同一局域网'
+    return
+  }
+
+  pairBusy.value = true
+  pairError.value = ''
+  try {
+    const info = uni.getSystemInfoSync()
+    const result = await link.call<{ deviceId: string; label: string; token: string }>('pair.finish', {
+      code,
+      label: `${info.platform ?? 'mobile'} 上的 DSH Link`,
+      platform: info.platform ?? 'unknown',
+    })
+    // 令牌是 bearer 凭证：存本地，下次连接用它换认证。
+    // 只存 token，不存密码——密码永不出现在移动端。
+    try {
+      uni.setStorageSync(`dsh-link/token/${result.deviceId}`, result.token)
+    } catch {
+      // 存储失败不影响本次会话，只是下次要重新配对
+    }
+    await refreshAll()
+    haptic('medium')
+    closePair()
+    uni.showToast({ title: '配对成功', icon: 'none' })
+  } catch (error) {
+    pairError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    pairBusy.value = false
+  }
 }
 
 function goTab(tab: 'devices' | 'sessions' | 'me'): void {
@@ -99,9 +192,14 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 }
 
 onLoad(() => {
-  // TODO(M1): 从本地缓存 + Link 拉取；现在是演示数据
-  if (state.devices.length === 0) state.devices = demoDevices()
-  state.activeId = state.activeId || state.devices[0]?.deviceId || ''
+  // 首页只做一件事：确保有一条连接，然后拉真实设备表。
+  // 没有设备时不造假数据——显示空态与"添加设备"入口。
+  const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
+  if (device !== undefined) {
+    state.activeId = device.deviceId
+    connectDevice(device)
+    void refreshAll()
+  }
 })
 </script>
 
@@ -180,6 +278,14 @@ onLoad(() => {
         </MossTerm>
       </view>
 
+      <!-- 空态：没有任何设备时，唯一的行动是配对。
+           不显示假设备卡，也不显示"0 台在线"这种没有信息量的统计。 -->
+      <view v-if="state.devices.length === 0" class="empty">
+        <text class="empty-h mono">NO HOST</text>
+        <text class="empty-t">还没有连接任何电脑。</text>
+        <text class="empty-d t3">在电脑上打开 DSH，进入 dsh-link 设置，点「配对」拿到 6 位码。</text>
+      </view>
+
       <view class="adder" @tap="addDevice">
         <text class="plus mono">+</text>
         <text class="adder-t">添加电脑</text>
@@ -208,6 +314,52 @@ onLoad(() => {
           <view class="dlg-row">
             <view class="btn ghost" @tap="dismiss">取消</view>
             <view class="btn primary" @tap="requestUnlock">请求解锁</view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 配对面板：电脑出码 → 手机输码 -->
+    <view v-if="pairOpen" class="mask" @tap="closePair">
+      <view class="dialog term" @tap.stop>
+        <view class="term-bar">
+          <view class="dot" />
+          <text class="name">PAIR / HOST</text>
+          <text class="tag mono">6 DIGITS</text>
+        </view>
+        <view class="term-body">
+          <text class="dlg-t">输入电脑上显示的 6 位码</text>
+          <text class="dlg-d t2">
+            在电脑上打开 DSH → dsh-link 设置 → 生成配对码。码 2 分钟内有效。
+          </text>
+
+          <input
+            v-model="pairInput"
+            class="pair-input mono"
+            type="number"
+            maxlength="6"
+            placeholder="000000"
+            :disabled="pairBusy"
+          />
+
+          <!-- 首次配对时本地还没有 endpoint，必须让用户填一次地址。
+               之后这串会存进设备缓存，下次自动重连。 -->
+          <input
+            v-if="needsAddress"
+            v-model="pairAddress"
+            class="addr-input mono"
+            type="text"
+            placeholder="ws://192.168.1.23:7443/dshlink"
+            :disabled="pairBusy"
+          />
+
+          <text v-if="pairError" class="pair-err">{{ pairError }}</text>
+
+          <view class="dlg-row">
+            <view class="btn ghost" @tap="closePair">取消</view>
+            <view class="btn primary" @tap="finishPair">
+              {{ pairBusy ? '配对中…' : '配对' }}
+            </view>
           </view>
         </view>
       </view>
@@ -252,6 +404,54 @@ onLoad(() => {
 
 .iconbtn:active { transform: scale(0.94); }
 .iconbtn svg { width: 19px; height: 19px; }
+
+.empty {
+  margin: 18px 2px 6px;
+  padding: 20px 16px;
+  border-radius: var(--r-md);
+  border: 1px dashed var(--bd);
+  background: var(--s1);
+}
+
+.empty-h { font-size: 11px; letter-spacing: 0.18em; color: var(--t3); }
+.empty-t { display: block; margin-top: 8px; font-size: 14px; color: var(--t1); }
+.empty-d { display: block; margin-top: 6px; font-size: 11.5px; line-height: 17px; }
+
+.pair-input {
+  width: 100%;
+  height: 52px;
+  margin: 14px 0 6px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd-strong);
+  background: var(--bg);
+  color: var(--t1);
+  font-size: 24px;
+  letter-spacing: 10px;
+  text-align: center;
+}
+
+.pair-err {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--danger);
+}
+
+.addr-input {
+  width: 100%;
+  height: 44px;
+  margin-top: 8px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--t2);
+  font-size: 12px;
+}
 
 .statline {
   display: flex;

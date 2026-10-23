@@ -13,9 +13,19 @@ export interface LinkConfig {
     readonly enabled: boolean
     readonly port: number
     readonly bind: BindMode
+    /**
+     * 承载方式。
+     *   standalone：自己监听 port（默认）。可在 dsh 没开 web 时工作，但明文。
+     *   dsh-web   ：复用 dsh 的端口与 TLS（M0 只留配置位，upgrade 挂载在 M1 落地）。
+     */
+    readonly via: 'standalone' | 'dsh-web'
     readonly relayUrl?: string
     /** 心跳间隔；客户端据此判断死线，改这里要同步 App。 */
     readonly heartbeatMs: number
+    /** 配对码有效期。 */
+    readonly pairTtlMs: number
+    /** 额外允许的 Origin（dsh 自己的域名 / 反代地址）。 */
+    readonly allowedOrigins: readonly string[]
   }
   readonly lock: {
     readonly enabled: boolean
@@ -90,7 +100,12 @@ export const DEFAULT_CONFIG: LinkConfig = {
     enabled: true,
     port: 7443,
     bind: 'lan',
-    heartbeatMs: 2000,
+    via: 'standalone',
+    // 20s 是设计文档的结论（docs/09 §7）：2s 会让手机基带长期处于 connected 态，
+    // 而 NAT 保活 20s 足够。
+    heartbeatMs: 20_000,
+    pairTtlMs: 120_000,
+    allowedOrigins: [],
   },
   lock: {
     enabled: true,
@@ -212,6 +227,15 @@ export function normalizeConfig(raw: unknown): LinkConfig {
     relayUrl = relayRaw
   }
 
+  const viaRaw = gw['via']
+  let via: 'standalone' | 'dsh-web' = DEFAULT_CONFIG.gateway.via
+  if (viaRaw !== undefined) {
+    if (viaRaw !== 'standalone' && viaRaw !== 'dsh-web') {
+      throw new ConfigError('gateway.via', '"standalone" | "dsh-web"', viaRaw)
+    }
+    via = viaRaw
+  }
+
   const registriesRaw = pl['allowedRegistries']
   let allowedRegistries: string[] = []
   if (registriesRaw !== undefined) {
@@ -229,8 +253,11 @@ export function normalizeConfig(raw: unknown): LinkConfig {
       enabled: asBool(gw['enabled'], 'gateway.enabled', base.gateway.enabled),
       port: asInt(gw['port'], 'gateway.port', base.gateway.port, 1024, 65535),
       bind,
+      via,
       ...(relayUrl === undefined ? {} : { relayUrl }),
-      heartbeatMs: asInt(gw['heartbeatMs'], 'gateway.heartbeatMs', base.gateway.heartbeatMs, 500, 60_000),
+      heartbeatMs: asInt(gw['heartbeatMs'], 'gateway.heartbeatMs', base.gateway.heartbeatMs, 1000, 60_000),
+      pairTtlMs: asInt(gw['pairTtlMs'], 'gateway.pairTtlMs', base.gateway.pairTtlMs, 30_000, 10 * 60_000),
+      allowedOrigins: asStringArray(gw['allowedOrigins'], 'gateway.allowedOrigins'),
     },
     lock: {
       enabled: asBool(lk['enabled'], 'lock.enabled', base.lock.enabled),

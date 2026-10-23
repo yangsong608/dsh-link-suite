@@ -6,66 +6,76 @@
  * 等待你 → 进行中 → 最近完成。时间倒序会让"三小时前跑完的任务"压住"正在等你批准的"。
  */
 import { computed } from 'vue'
+import { onLoad } from '@dcloudio/uni-app'
 import PageShell from '@/components/PageShell.vue'
 import MossDot from '@/components/moss/MossDot.vue'
-import { state } from '@/core/store'
+import { state, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
+import { connectDevice, refreshAll } from '@/core/link'
 
-interface SessionRow {
-  id: string
-  title: string
-  host: string
-  status: 'waiting' | 'running' | 'done' | 'error'
-  excerpt: string
-  time: string
+const rows = computed(() => state.sessions)
+const groups = computed(() => [
+  {
+    key: 'waiting',
+    label: '等待你',
+    items: rows.value.filter((r) => r.status === 'waiting-approval' || r.status === 'waiting-input'),
+  },
+  { key: 'running', label: '进行中', items: rows.value.filter((r) => r.status === 'running') },
+  {
+    key: 'done',
+    label: '最近完成',
+    items: rows.value.filter((r) => r.status === 'done' || r.status === 'error' || r.status === 'idle'),
+  },
+])
+
+/** 时间显示：今天给时刻，昨天给"昨天"，更早给日期。手写而不是引库，省 3KB。 */
+function timeOf(updatedAt: number): string {
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return '—'
+  const d = new Date(updatedAt)
+  const now = new Date()
+  const sameDay = d.toDateString() === now.toDateString()
+  if (sameDay) return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const yesterday = new Date(now.getTime() - 86_400_000)
+  if (d.toDateString() === yesterday.toDateString()) return '昨天'
+  return `${String(d.getMonth() + 1)}/${String(d.getDate())}`
 }
 
-const demo: SessionRow[] = [
-  {
-    id: 's_1',
-    title: '重构上传通道，加上断点续传',
-    host: 'MacBook Pro',
-    status: 'waiting',
-    excerpt: '需要你确认：会覆盖 dist/ 下 3 个产物（+1.2MB）',
-    time: '14:05',
-  },
-  {
-    id: 's_2',
-    title: '把 auth 中间件从 cookie 换成 device key',
-    host: 'MacBook Pro',
-    status: 'running',
-    excerpt: '正在读 packages/auth/src/index.ts',
-    time: '进行中',
-  },
-  {
-    id: 's_3',
-    title: '分析一下这个仓库的构建时长',
-    host: 'Studio 工作站',
-    status: 'waiting',
-    excerpt: 'agent 问：要不要连 CI 的历史数据一起看？',
-    time: '13:41',
-  },
-  {
-    id: 's_4',
-    title: '生成上周的周报',
-    host: 'MacBook Pro',
-    status: 'done',
-    excerpt: '已生成 docs/weekly-42.md',
-    time: '昨天',
-  },
-]
+function statusLabel(status: SessionRow['status']): string {
+  switch (status) {
+    case 'waiting-approval':
+      return '等待审批'
+    case 'waiting-input':
+      return '等待回答'
+    case 'running':
+      return '进行中'
+    case 'error':
+      return '出错'
+    case 'idle':
+      return '空闲'
+    default:
+      return '已完成'
+  }
+}
 
-const rows = computed(() => demo)
-const groups = computed(() => [
-  { key: 'waiting', label: '等待你', items: rows.value.filter((r) => r.status === 'waiting') },
-  { key: 'running', label: '进行中', items: rows.value.filter((r) => r.status === 'running') },
-  { key: 'done', label: '最近完成', items: rows.value.filter((r) => r.status === 'done' || r.status === 'error') },
-])
+/** 刷新：连上主机后拉真实列表；失败时保留旧列表并提示。 */
+async function refresh(): Promise<void> {
+  const result = await refreshAll()
+  if (!result.ok && result.error !== undefined) {
+    uni.showToast({ title: result.error.slice(0, 18), icon: 'none' })
+  }
+}
 
 function openChat(row: SessionRow): void {
   haptic('light')
   uni.navigateTo({ url: `/pages/chat/chat?id=${row.id}` })
 }
+
+onLoad(() => {
+  // 进入会话页时确保已连接（首页可能还没连，或连接在切 tab 时丢了）
+  const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
+  if (device !== undefined) connectDevice(device)
+  void refresh()
+})
 
 function goTab(tab: 'devices' | 'sessions' | 'me'): void {
   const map = { devices: '/pages/index/index', sessions: '/pages/sessions/sessions', me: '/pages/me/me' }
@@ -92,19 +102,29 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
             v-for="r in g.items"
             :key="r.id"
             class="srow"
-            :class="{ waiting: r.status === 'waiting' }"
+            :class="{ waiting: r.status === 'waiting-approval' || r.status === 'waiting-input' }"
             @tap="openChat(r)"
           >
             <view class="srow-l">
-              <MossDot :status="r.status === 'running' ? 'connecting' : r.status === 'waiting' ? 'soft' : r.status === 'done' ? 'online' : 'offline'" />
+              <MossDot
+                :status="
+                  r.status === 'running'
+                    ? 'connecting'
+                    : r.status === 'waiting-approval' || r.status === 'waiting-input'
+                      ? 'soft'
+                      : r.status === 'error'
+                        ? 'offline'
+                        : 'online'
+                "
+              />
               <view class="srow-body">
                 <text class="st">{{ r.title }}</text>
-                <text class="ex">{{ r.excerpt }}</text>
+                <text class="ex">{{ r.excerpt ?? statusLabel(r.status) }}</text>
               </view>
             </view>
             <view class="srow-r">
-              <text class="host mono">{{ r.host }}</text>
-              <text class="tm mono">{{ r.time }}</text>
+              <text class="host mono">{{ statusLabel(r.status) }}</text>
+              <text class="tm mono">{{ timeOf(r.updatedAt) }}</text>
             </view>
           </view>
         </template>

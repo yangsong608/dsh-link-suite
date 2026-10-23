@@ -6,10 +6,11 @@
  * moss 的终端里没有气泡，只有行——沿用这个，信息密度更高，
  * 而且屏幕窄的时候不会出现"一屏三个气泡什么也没说"。
  */
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onUnmounted, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { state, skinClass, themeClass, liteClass } from '@/core/store'
 import { haptic } from '@/core/haptic'
+import { currentLink, connectDevice, setSessionListener } from '@/core/link'
 import MossDot from '@/components/moss/MossDot.vue'
 
 type Item =
@@ -18,35 +19,18 @@ type Item =
   | { k: 'activity'; tool: string; summary: string; ms: string; ok?: boolean }
   | { k: 'approval'; id: string; cmd: string; risk: string; state: 'pending' | 'ok' | 'no'; at: string }
 
-const title = ref('重构上传通道，加上断点续传')
-const host = ref('MacBook Pro')
+const title = ref('会话')
+const host = ref('')
 const draft = ref('')
 const scrollTop = ref(0)
+const sessionId = ref('')
+const sending = ref(false)
+/** 出错原因。空串表示没有错误——比一个 isError 布尔值好，因为要显示文案。 */
+const errorText = ref('')
 
-const items = ref<Item[]>([
-  { k: 'user', text: '上传通道现在是整文件一次性传给宿主，断网就废。加上断点续传。', at: '14:01' },
-  {
-    k: 'assist',
-    text: '先看一下现在的实现，再决定分块大小与重传策略。',
-    at: '14:01',
-  },
-  { k: 'activity', tool: 'Read', summary: 'packages/plugin/src/fs/upload.ts', ms: '42ms', ok: true },
-  { k: 'activity', tool: 'Grep', summary: 'CHUNK_BYTES | uploadId | resume', ms: '18ms', ok: true },
-  {
-    k: 'assist',
-    text: '分块已经按 512KiB 做了，但没有 resumable 语义：uploadId 每次重连都重建。我打算把 uploadId 落到磁盘，并在 fs.upload 之前加一次 HEAD 探测，让客户端知道已经收到多少。',
-    at: '14:03',
-  },
-  { k: 'activity', tool: 'Edit', summary: 'upload.ts  ·  +48 −12', ms: '310ms', ok: true },
-  {
-    k: 'approval',
-    id: 'ap_1',
-    cmd: '$ npm run build',
-    risk: '会覆盖 dist/ 下 3 个产物（+1.2MB），使用你当前用户权限运行',
-    state: 'pending',
-    at: '14:05',
-  },
-])
+// 初值是空的：真实数据由 session.follow 推上来。
+// 演示数据留在这里最危险——它会让"没连上"看起来像"连上了但没内容"。
+const items = ref<Item[]>([])
 
 const rootClass = computed(() => ['dsh', skinClass.value, themeClass.value, liteClass.value])
 const pendingApproval = computed(() => items.value.find((i) => i.k === 'approval' && i.state === 'pending'))
@@ -60,33 +44,141 @@ async function scrollToEnd(): Promise<void> {
   scrollTop.value = 999999 + Math.random()
 }
 
-function approve(item: Extract<Item, { k: 'approval' }>, ok: boolean): void {
-  haptic(ok ? 'heavy' : 'heavy')
+async function approve(item: Extract<Item, { k: 'approval' }>, ok: boolean): Promise<void> {
+  haptic('heavy')
+  const link = currentLink()
+  if (link === undefined) {
+    errorText.value = '尚未连接主机'
+    return
+  }
+  // 先乐观置态，失败再回滚：点完之后卡半秒不动是最糟的反馈
   item.state = ok ? 'ok' : 'no'
-  items.value.push({
-    k: 'assist',
-    text: ok ? '开始构建…（日志会持续追加）' : '好，停下了。你想换成别的做法吗？',
-    at: '14:05',
-    streaming: ok,
-  })
-  void scrollToEnd()
+  try {
+    await link.call('approval.answer', { id: item.id, outcome: ok ? 'allowed-once' : 'rejected' })
+    void scrollToEnd()
+  } catch (error) {
+    item.state = 'pending'
+    errorText.value = `批准失败：${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
-function send(): void {
+async function send(): Promise<void> {
   const text = draft.value.trim()
-  if (text.length === 0) return
+  if (text.length === 0 || sending.value) return
+  const link = currentLink()
+  if (link === undefined) {
+    errorText.value = '尚未连接主机，请先在首页连接或配对'
+    return
+  }
+  if (sessionId.value === '') {
+    errorText.value = '还不知道要发到哪个会话（会话列表里点一个进入）'
+    return
+  }
+
   haptic('medium')
-  items.value.push({ k: 'user', text, at: '现在' })
+  sending.value = true
+  errorText.value = ''
+  items.value.push({ k: 'user', text, at: nowLabel() })
   draft.value = ''
   void scrollToEnd()
+
+  try {
+    // requestId 由客户端生成并应持久化：断线重发时宿主靠它去重。
+    // 这里用时间戳+随机串，够用且不引依赖。
+    const requestId = `r_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+    await link.call('session.prompt', { sessionId: sessionId.value, text, requestId })
+  } catch (error) {
+    errorText.value = `发送失败：${error instanceof Error ? error.message : String(error)}`
+  } finally {
+    sending.value = false
+  }
+}
+
+function nowLabel(): string {
+  const d = new Date()
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** 把服务端推来的帧接到 UI 上。事件分两路：stream（聊天气泡）与 trace（工具活动）。 */
+function onSessionEvent(method: string, payload: unknown): void {
+  const data = payload as Record<string, unknown> | undefined
+  if (data === undefined) return
+
+  if (method === 'session.stream') {
+    const k = data['k']
+    if (k === 'assist') {
+      items.value.push({ k: 'assist', text: String(data['text'] ?? ''), at: nowLabel() })
+    } else if (k === 'activity') {
+      const ms = typeof data['ms'] === 'number' ? `${String(data['ms'])}ms` : ''
+      items.value.push({
+        k: 'activity',
+        tool: String(data['tool'] ?? 'tool'),
+        summary: String(data['summary'] ?? ''),
+        ms,
+        ok: data['ok'] === false ? false : true,
+      })
+    } else if (k === 'approval') {
+      items.value.push({
+        k: 'approval',
+        id: String(data['id'] ?? ''),
+        cmd: String(data['cmd'] ?? '需要审批'),
+        risk: typeof data['risk'] === 'string' ? data['risk'] : '',
+        state: 'pending',
+        at: nowLabel(),
+      })
+      haptic('heavy')
+    } else if (k === 'done') {
+      // 轮次结束：把最后一条 assist 的 streaming 收掉
+    }
+    void scrollToEnd()
+    return
+  }
+
+  if (method === 'approval.request') {
+    items.value.push({
+      k: 'approval',
+      id: String(data['id'] ?? ''),
+      cmd: String(data['tool'] ?? '需要审批'),
+      risk: typeof data['reason'] === 'string' ? data['reason'] : '',
+      state: 'pending',
+      at: nowLabel(),
+    })
+    haptic('heavy')
+    void scrollToEnd()
+  }
 }
 
 onLoad((q) => {
-  if (q && typeof q['id'] === 'string') {
-    // 真实实现里按 id 拉 session.follow；这里只演示第一条
+  const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
+  host.value = device?.name ?? ''
+  if (device !== undefined) connectDevice(device)
+
+  const id = q !== undefined && typeof q['id'] === 'string' ? q['id'] : ''
+  sessionId.value = id
+
+  const row = state.sessions.find((s) => s.id === id)
+  title.value = row?.title ?? '会话'
+
+  // 订阅必须先注册再发 follow：否则宿主的头几帧会在监听器就位前丢掉
+  setSessionListener(onSessionEvent)
+
+  const link = currentLink()
+  if (link !== undefined && id !== '') {
+    void link
+      .call('session.follow', { sessionId: id })
+      .catch((error: unknown) => {
+        errorText.value = `订阅失败：${error instanceof Error ? error.message : String(error)}`
+      })
+  } else if (id === '') {
+    errorText.value = '没有指定会话'
   }
-  state.waiting = 1
-  void scrollToEnd()
+})
+
+// 用 Vue 的 onUnmounted 而不是 uni 的 onUnload：后者在当前版本的类型入口里
+// 没有导出（运行时有，但 vue-tsc 会红）。行为等价，且这里本来就只关心组件销毁。
+onUnmounted(() => {
+  // 页面离开就取消监听，避免回退后旧页面的闭包继续改 items
+  setSessionListener(undefined)
 })
 </script>
 
