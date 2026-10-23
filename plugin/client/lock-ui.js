@@ -617,6 +617,8 @@ window.__ModuleLoader__.load({
           setPassword: function (next, current) { return call('/lock/password', { next: next, current: current }) },
           clearPassword: function (current) { return call('/lock/password', { current: current }, 'DELETE') },
           lockNow: function () { return call('/lock', { action: 'lock' }) },
+          getGateway: function () { return call('/config/gateway') },
+          setGateway: function (body) { return call('/config/gateway', body) },
           getRelay: function () { return call('/config/relay') },
           setRelay: function (relayUrl) { return call('/config/relay', { relayUrl: relayUrl }) },
           startPair: function () { return call('/pair/start', {}) },
@@ -700,6 +702,9 @@ window.__ModuleLoader__.load({
       // 公网接入（nps / frp）：地址与当前生效状态
       var relay = React.useState({ url: '', current: '', endpoints: [], msg: '', kind: '' })
       var relayState = relay[0], setRelay = relay[1]
+      // 网关开关与端口（配对的先决条件）
+      var gw = React.useState({ enabled: true, port: 7443, running: false, error: null, msg: '', kind: '', draftPort: '7443' })
+      var gwState = gw[0], setGw = gw[1]
       // 手机发起的待确认配对请求
       var pend = React.useState([])
       var pending = pend[0], setPending = pend[1]
@@ -728,6 +733,22 @@ window.__ModuleLoader__.load({
         })
       }, [api])
 
+      var loadGateway = React.useCallback(function () {
+        api.getGateway().then(function (out) {
+          if (out.status !== 200) return
+          setGw(function (g) {
+            return Object.assign({}, g, {
+              enabled: out.body.enabled,
+              port: out.body.port,
+              running: out.body.running,
+              error: out.body.error,
+              // 不覆盖用户正在输入的值
+              draftPort: g.draftPort === '' ? String(out.body.port) : g.draftPort,
+            })
+          })
+        })
+      }, [api])
+
       var loadPending = React.useCallback(function () {
         api.pendingPairs().then(function (out) {
           if (out.status === 200) setPending(out.body.pending || [])
@@ -738,6 +759,7 @@ window.__ModuleLoader__.load({
         loadStatus()
         loadDevices()
         loadRelay()
+        loadGateway()
         loadPending()
         // 只在挂载时读一次：设置面板的信息不需要实时刷新，
         // 每秒轮询会让它在后台一直发请求。
@@ -881,6 +903,79 @@ window.__ModuleLoader__.load({
           ),
           e('div', { className: '__dl_note' },
             '锁的是 dsh 的操作能力，不是操作系统登录屏。正在运行的任务不会因为锁屏而暂停。')
+        ),
+
+        // ── 网关开关与端口 ──
+        // 配对的唯一用途是"手机连过来"。网关没开时生成配对码毫无意义
+        // （手机拿到码也连不上），所以这里把开关放在配对区之前。
+        e('div', { className: '__dl_group' },
+          e('div', { className: '__dl_title' }, '远程访问网关'),
+          e('div', { className: '__dl_hint' },
+            '手机与平板只能通过这个网关连进来。关掉后远程访问完全不可用，本机锁屏不受影响。'),
+          e('div', { className: '__dl_two' },
+            e('label', { className: '__dl_label' },
+              e('span', { className: '__dl_hint' }, '启用网关'),
+              e('input', {
+                type: 'checkbox',
+                checked: gwState.enabled,
+                onChange: (function () {
+                  return function () {
+                    var next = !gwState.enabled
+                    api.setGateway({ enabled: next }).then(function (out) {
+                      if (out.status === 200) {
+                        setGw(function (g) {
+                          return Object.assign({}, g, {
+                            enabled: out.body.enabled, port: out.body.port,
+                            running: out.body.running, error: out.body.error,
+                            msg: next ? '网关已启动' : '网关已关闭', kind: 'ok'
+                          })
+                        })
+                      } else {
+                        setGw(function (g) { return Object.assign({}, g, { msg: (out.body && out.body.error) || '操作失败', kind: 'err' }) })
+                      }
+                    })
+                  }
+                })()
+              })
+            ),
+            e('label', { className: '__dl_label' },
+              e('span', { className: '__dl_hint' }, '端口（默认 7443）'),
+              e('input', {
+                className: '__dl_input', type: 'text', inputMode: 'numeric',
+                value: gwState.draftPort,
+                onChange: function (ev) {
+                  setGw(function (g) { return Object.assign({}, g, { draftPort: ev.target.value }) })
+                }
+              })
+            )
+          ),
+          e('div', { className: '__dl_row' },
+            e('button', {
+              className: '__dl_btn',
+              onClick: function () {
+                var n = parseInt(gwState.draftPort, 10)
+                api.setGateway({ enabled: gwState.enabled, port: n }).then(function (out) {
+                  if (out.status === 200) {
+                    setGw(function (g) {
+                      return Object.assign({}, g, {
+                        enabled: out.body.enabled, port: out.body.port,
+                        running: out.body.running, error: out.body.error,
+                        draftPort: String(out.body.port),
+                        msg: '已保存，端口 ' + out.body.port, kind: 'ok'
+                      })
+                    })
+                  } else {
+                    setGw(function (g) {
+                      return Object.assign({}, g, { msg: (out.body && out.body.error) || '保存失败', kind: 'err' })
+                    })
+                  }
+                })
+              }
+            }, '保存端口'),
+            e('span', { className: gwState.running ? '__dl_ok' : '__dl_warn' },
+              gwState.running ? '运行中' : '未运行' + (gwState.error ? '：' + gwState.error : '')),
+            e('span', { className: gwState.kind === 'err' ? '__dl_warn' : '__dl_ok' }, gwState.msg)
+          )
         ),
 
         // ── 密码 ──

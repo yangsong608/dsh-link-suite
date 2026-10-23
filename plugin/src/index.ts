@@ -69,13 +69,26 @@ function lanAddresses(): string[] {
 interface RuntimeConfig {
   readonly relayUrl?: string
   readonly allowedOrigins?: readonly string[]
+  /** 网关开关（界面可改，重启仍在）。 */
+  readonly gatewayEnabled?: boolean
+  /** 监听端口，默认 7443。 */
+  readonly gatewayPort?: number
 }
 
 async function loadRuntime(dir: string): Promise<RuntimeConfig> {
   try {
     const raw = await fs.readFile(join(dir, 'runtime.json'), 'utf8')
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    const out: { relayUrl?: string; allowedOrigins?: readonly string[] } = {}
+    const out: {
+      relayUrl?: string
+      allowedOrigins?: readonly string[]
+      gatewayEnabled?: boolean
+      gatewayPort?: number
+    } = {}
+    if (typeof parsed['gatewayEnabled'] === 'boolean') out.gatewayEnabled = parsed['gatewayEnabled']
+    if (typeof parsed['gatewayPort'] === 'number' && parsed['gatewayPort'] >= 1024 && parsed['gatewayPort'] <= 65535) {
+      out.gatewayPort = parsed['gatewayPort']
+    }
     if (typeof parsed['relayUrl'] === 'string' && /^wss?:\/\//.test(parsed['relayUrl'])) {
       out.relayUrl = parsed['relayUrl']
     }
@@ -221,6 +234,15 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
 
   /** 网关运行状态（启动失败原因给设置页看）。 */
   const gwState: { gatewayError?: string } = {}
+  /*
+   * 网关的有效开关与端口。
+   *
+   * 优先级：界面设置过（runtime.json）> 配置文件默认。
+   * 之所以要"界面值"这一层：用户希望在设置里点一下就能开/关并改端口，
+   * 而不是去手编 YAML 再重启 DSH。
+   */
+  let gwEnabled = runtime.gatewayEnabled ?? cfg.gateway.enabled
+  let gwPort = runtime.gatewayPort ?? cfg.gateway.port
 
   /*
    * 启动网关。抽成函数是为了能被**自愈循环**重复调用：
@@ -235,7 +257,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
       gateway = await startGatewayWithRetry({
         rc,
         handlers: createHandlers(),
-        port: cfg.gateway.port,
+        port: gwPort,
         host,
         heartbeatMs: cfg.gateway.heartbeatMs,
         allowedOrigins: cfg.gateway.allowedOrigins,
@@ -264,7 +286,14 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     }
   }
 
-  if (cfg.gateway.enabled) {
+  /** 关网关（供设置页开关调用）。 */
+  const stopGateway = async (): Promise<void> => {
+    const current = gateway
+    gateway = undefined
+    try { await current?.close() } catch { /* 已经关了 */ }
+  }
+
+  if (gwEnabled) {
     await startGatewayOnce()
 
     // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
@@ -291,13 +320,27 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     ctx.effect(() => () => clearInterval(healTimer), 'dsh-link: gateway self-heal')
   }
 
+  /*
+   * 网关控制面：HTTP 处理器在另一个函数里，拿不到 apply 的局部变量，
+   * 所以把"开关 / 端口 / 启停"包成一个对象传进去。
+   */
+  const gwControl = {
+    get enabled(): boolean { return gwEnabled },
+    set enabled(v: boolean) { gwEnabled = v },
+    get port(): number { return gwPort },
+    set port(v: number) { gwPort = v },
+    start: startGatewayOnce,
+    stop: stopGateway,
+    state: gwState,
+  }
+
   // ── 本机 HTTP 面（给浏览器里的锁屏层用）─────────────────────────────────
   const webServer = ctx.get<WebServerService>('webServer', false)
   if (webServer !== undefined) {
     const off = webServer.register({
       kind: 'prefix',
       path: '/dsh-link',
-      handler: makeHttpHandler(lock, () => gateway, devices, cfg, hostId, relay, recomputeEndpoints, gwState),
+      handler: makeHttpHandler(lock, () => gateway, devices, cfg, hostId, relay, recomputeEndpoints, gwState, gwControl),
     })
     ctx.effect(() => () => off(), 'dsh-link: http routes')
   }
@@ -347,6 +390,13 @@ function makeHttpHandler(
   relay: RelayState,
   recomputeEndpoints: () => string[],
   gwState: { gatewayError?: string },
+  gwControl: {
+    enabled: boolean
+    port: number
+    start: () => Promise<void>
+    stop: () => Promise<void>
+    state: { gatewayError?: string }
+  },
 ) {
   return async (rawReq: unknown, rawRes: unknown): Promise<void> => {
     const req = rawReq as IncomingMessage
@@ -488,7 +538,17 @@ function makeHttpHandler(
       // ── 配对（PC 侧）────────────────────────────────────────────────────
       // 用户必须在电脑前确认，手机才有码可输。这与安全模型同向：
       // 配对码只是"谁先拿到"的凭据，真正的授权动作是这里的 approve。
+      // 配对的唯一用途是"从手机连过来"，网关没开时生成配对码毫无意义：
+      // 手机拿到码也连不上，只会让人以为配对坏了。
       if (url.pathname === '/dsh-link/pair/start' && req.method === 'POST') {
+        // 网关没开就没有可连的地址：此时生成配对码只会让人白等
+        if (getGateway() === undefined) {
+          json(409, {
+            error: '网关未启动，无法生成配对码',
+            gatewayError: gwState.gatewayError ?? '未启动',
+          })
+          return
+        }
         // PC 侧点「生成配对码」= 本人在电脑前 = 物理在场证明，直接预批准
         const session = devices?.startPair(cfg.gateway.pairTtlMs, true)
         if (session === undefined) {
@@ -556,6 +616,59 @@ function makeHttpHandler(
         return
       }
 
+      // ── 网关开关与端口 ────────────────────────────────────────────────
+      if (url.pathname === '/dsh-link/config/gateway' && req.method === 'GET') {
+        json(200, {
+          enabled: gwControl.enabled,
+          port: gwControl.port,
+          running: getGateway() !== undefined,
+          error: gwState.gatewayError ?? null,
+        })
+        return
+      }
+
+      if (url.pathname === '/dsh-link/config/gateway' && req.method === 'POST') {
+        const body = await readJson(req)
+        const nextEnabled = typeof body['enabled'] === 'boolean' ? body['enabled'] : gwControl.enabled
+        const rawPort = body['port']
+        let nextPort = gwControl.port
+        if (rawPort !== undefined) {
+          const n = Number(rawPort)
+          // 1024 以下需要 root；65535 以上不合法
+          if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+            json(400, { error: '端口需为 1024–65535 之间的整数' })
+            return
+          }
+          nextPort = n
+        }
+
+        const portChanged = nextPort !== gwControl.port
+        gwControl.enabled = nextEnabled
+        gwControl.port = nextPort
+        await saveRuntime(LINK_DIR, {
+          ...(relay.relayUrl === undefined ? {} : { relayUrl: relay.relayUrl }),
+          gatewayEnabled: gwControl.enabled,
+          gatewayPort: gwControl.port,
+        })
+
+        // 立即生效：开→起，关→停，改端口→重建
+        if (!gwControl.enabled) {
+          await gwControl.stop()
+        } else if (getGateway() === undefined || portChanged) {
+          if (portChanged) await gwControl.stop()
+          await gwControl.start()
+        }
+
+        json(200, {
+          ok: true,
+          enabled: gwControl.enabled,
+          port: gwControl.port,
+          running: getGateway() !== undefined,
+          error: gwState.gatewayError ?? null,
+        })
+        return
+      }
+
       if (url.pathname === '/dsh-link/config/relay' && req.method === 'POST') {
         const body = await readJson(req)
         const next = typeof body['relayUrl'] === 'string' ? body['relayUrl'].trim() : ''
@@ -563,7 +676,7 @@ function makeHttpHandler(
         // 空串 = 清除（回到只用局域网）
         if (next.length === 0) {
           relay.relayUrl = undefined
-          await saveRuntime(LINK_DIR, {})
+          await saveRuntime(LINK_DIR, { gatewayEnabled: gwControl.enabled, gatewayPort: gwControl.port })
           relay.endpoints = recomputeEndpoints()
           json(200, { ok: true, relayUrl: null, endpoints: relay.endpoints })
           return
@@ -576,7 +689,7 @@ function makeHttpHandler(
         }
 
         relay.relayUrl = next
-        await saveRuntime(LINK_DIR, { relayUrl: next })
+        await saveRuntime(LINK_DIR, { relayUrl: next, gatewayEnabled: gwControl.enabled, gatewayPort: gwControl.port })
         relay.endpoints = recomputeEndpoints()
         json(200, { ok: true, relayUrl: next, endpoints: relay.endpoints })
         return
