@@ -155,14 +155,49 @@ window.__ModuleLoader__.load({
       bar.innerHTML = [
         '<span style="flex:none;color:#e8c24a">!</span>',
         '<span style="flex:1">锁屏未生效：还没有设置密码。</span>',
-        '<button type="button" style="flex:none;height:30px;padding:0 12px;border-radius:6px;cursor:pointer;',
+        '<button type="button" data-act="pw" style="flex:none;height:30px;padding:0 12px;border-radius:6px;cursor:pointer;',
         'border:1px solid rgba(232,194,74,.5);background:rgba(60,46,12,.9);color:#f0e2b8;',
-        "font:inherit\">设置密码</button>"
+        'font:inherit">设置密码</button>',
+        '<button type="button" data-act="setup" style="flex:none;height:30px;padding:0 12px;border-radius:6px;',
+        'cursor:pointer;border:1px solid rgba(232,194,74,.3);background:transparent;color:#f0e2b8;',
+        'font:inherit">全部设置</button>'
       ].join('')
-      bar.querySelector('button').addEventListener('click', function () {
+      bar.querySelector('[data-act="pw"]').addEventListener('click', function () {
         openPasswordSetup(bar)
       })
+      // 配对与设备管理只在设置页里有——不从提示条给出入口，用户根本找不到
+      bar.querySelector('[data-act="setup"]').addEventListener('click', function () {
+        window.open(BASE + '/setup', '_blank', 'noopener')
+      })
       document.body.appendChild(bar)
+    }
+
+    // ── 常驻设置入口 ────────────────────────────────────────────────────────
+    // 只在"未武装"时提示是不够的：用户设好密码之后仍然需要配对设备、撤销设备。
+    // 一个 28px 的小胶囊，右下角，不抢焦点、不挡内容。
+    var PILL_ID = ROOT_ID + '-pill'
+
+    function syncSetupPill() {
+      if (document.getElementById(PILL_ID)) return
+      var pill = document.createElement('button')
+      pill.id = PILL_ID
+      pill.type = 'button'
+      pill.title = 'DSH Link 设置（配对设备、锁屏密码）'
+      pill.textContent = 'LINK'
+      pill.style.cssText = [
+        'position:fixed;right:14px;bottom:14px;z-index:2147483000',
+        'height:26px;padding:0 10px;border-radius:13px;cursor:pointer',
+        'border:1px solid rgba(70,227,166,.32);background:rgba(11,18,16,.86)',
+        'color:rgba(230,243,236,.62);font:10px/1 ui-monospace,"SF Mono",Menlo,monospace',
+        'letter-spacing:1.4px;opacity:.55;transition:opacity .18s,color .18s',
+        'backdrop-filter:blur(6px)'
+      ].join(';')
+      pill.addEventListener('mouseenter', function () { pill.style.opacity = '1'; pill.style.color = '#46e3a6' })
+      pill.addEventListener('mouseleave', function () { pill.style.opacity = '.55'; pill.style.color = 'rgba(230,243,236,.62)' })
+      pill.addEventListener('click', function () {
+        window.open(BASE + '/setup', '_blank', 'noopener')
+      })
+      document.body.appendChild(pill)
     }
 
     /** 首次设置密码的极简对话框：只问一个字段，按回车提交。 */
@@ -452,6 +487,8 @@ window.__ModuleLoader__.load({
       })
       reportActivity()
 
+      syncSetupPill()
+
       // 有钱能使鬼推磨，但没网络不能解锁：先拉一次，再按 1s 轮询
       poll()
       state.poll = setInterval(poll, POLL_MS)
@@ -463,6 +500,8 @@ window.__ModuleLoader__.load({
           window.removeEventListener('keydown', onActivity, true)
           window.removeEventListener('wheel', onActivity, true)
           window.removeEventListener('touchstart', onActivity, true)
+          var pill = document.getElementById(PILL_ID)
+          if (pill) pill.remove()
           unmount()
         }
       }, 'dsh-link: lock overlay + activity')

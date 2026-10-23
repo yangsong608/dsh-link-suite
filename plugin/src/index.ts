@@ -22,6 +22,7 @@ import { bindHost, normalizeConfig, type LinkConfig } from './config.js'
 import type { DshContext, WebServerService } from './dsh.js'
 import { LockService } from './lock/index.js'
 import { DeviceRegistry } from './gateway/devices.js'
+import { renderSetupPage, SETUP_PATH } from './setup-page.js'
 import { createApprovalBridge, createSubscriptionHub, type Deps } from './adapters/live.js'
 import { createHandlers, type RouteContext } from './gateway/router.js'
 import { startGateway, type Gateway } from './gateway/server.js'
@@ -98,6 +99,9 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
   // 先于网关创建：handlers 需要它，而配对是网关能不能用的前提。
   const devices = new DeviceRegistry(join(LINK_DIR, 'devices.json'))
   await devices.load()
+
+  // 手机要连的地址由宿主算出来（用户不该自己去查 ifconfig）。
+  const endpoints = lanAddresses().map((ip) => `ws://${ip}:${cfg.gateway.port}/dshlink`)
 
   // ── 订阅与审批 ──────────────────────────────────────────────────────────
   // 两者都依赖网关（推帧 / 广播），所以用晚绑定：先建对象，网关起来后它们读到的
@@ -180,7 +184,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     const off = webServer.register({
       kind: 'prefix',
       path: '/dsh-link',
-      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId),
+      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId, endpoints),
     })
     ctx.effect(() => () => off(), 'dsh-link: http routes')
   }
@@ -215,6 +219,7 @@ function makeHttpHandler(
   devices: DeviceRegistry,
   cfg: LinkConfig,
   hostId: string,
+  endpoints: readonly string[],
 ) {
   return async (rawReq: unknown, rawRes: unknown): Promise<void> => {
     const req = rawReq as IncomingMessage
@@ -233,6 +238,20 @@ function makeHttpHandler(
     }
 
     try {
+      // 设置页：把"只有接口、没有入口"的能力补上一个可点的界面。
+      if (url.pathname === SETUP_PATH && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        res.end(renderSetupPage(hostId, endpoints, gateway?.port ?? cfg.gateway.port))
+        return
+      }
+
+      // 用户从根路径进来时给一个跳转，省得记地址
+      if ((url.pathname === '/dsh-link' || url.pathname === '/dsh-link/') && req.method === 'GET') {
+        res.writeHead(302, { location: SETUP_PATH })
+        res.end()
+        return
+      }
+
       if (url.pathname === '/dsh-link/lock' && req.method === 'GET') {
         json(200, {
           ...lock.get(),
