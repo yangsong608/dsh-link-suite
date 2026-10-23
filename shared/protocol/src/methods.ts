@@ -65,6 +65,10 @@ export const METHODS = [
   'session.create',
   // 费用与峰谷（数据来自 dsh-cost-meter；宿主没装就返回 available:false）
   'cost.summary',
+  // 执行斜杠命令（/plan、/compact 等由宿主命令注册表处理）
+  'session.command',
+  // 计划 / 待办步骤（宿主 plan 投影）
+  'session.plan',
   'session.list',
   'session.prompt',
   'session.modelCatalog',

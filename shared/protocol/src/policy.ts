@@ -75,6 +75,9 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   'session.create': P('operator', 'unlocked'),
   // 只读金额：不涉及会话内容，viewer 即可
   'cost.summary': P('viewer'),
+  // 命令会改变会话状态（如进入 plan 模式），必须 operator + 解锁
+  'session.command': P('operator', 'unlocked'),
+  'session.plan': P('viewer'),
   'session.prompt': P('operator', 'unlocked'),
   'session.cancel': P('operator', 'unlocked'),
   'session.follow': P('viewer'),

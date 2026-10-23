@@ -42,6 +42,51 @@ const wide = ref(false)
  * 原来断开后只在设备页能看到"离线"，用户停在对话页发消息，
  * 失败提示又跑到聊天流顶部——他只会觉得"发了没反应"。
  */
+/* ── 计划步骤与斜杠命令 ───────────────────────────────────────────── */
+
+interface PlanStep { text: string; status: string }
+const planSteps = ref<PlanStep[]>([])
+const planActive = ref(false)
+const planOpen = ref(false)
+
+/** 读宿主 plan 投影：agent 打算做什么、做到哪了。 */
+async function loadPlan(): Promise<void> {
+  const link = currentLink()
+  if (link === undefined || sessionId.value === '') return
+  try {
+    const r = await link.call<{ active: boolean; steps: PlanStep[] }>('session.plan', { sessionId: sessionId.value })
+    planActive.value = r.active === true
+    planSteps.value = Array.isArray(r.steps) ? r.steps : []
+  } catch {
+    // 宿主没有 plan 投影（未装 plan-mode）就整块不显示
+    planSteps.value = []
+  }
+}
+
+const doneSteps = computed(() => planSteps.value.filter((x) => x.status === 'completed').length)
+
+/**
+ * 发送斜杠命令。
+ *
+ * 必须走 session.command：/plan 这类是宿主命令注册表处理的，
+ * 当普通消息发出去只会被当成一句话，不会进入 plan 模式。
+ */
+async function runCommand(line: string): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+  haptic('light')
+  try {
+    const r = await link.call<{ ok: boolean; text: string }>('session.command', {
+      sessionId: sessionId.value,
+      text: line,
+    })
+    uni.showToast({ title: r.text.length > 0 ? r.text.slice(0, 22) : '已执行', icon: 'none' })
+    void loadPlan()
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 20) : '命令失败', icon: 'none' })
+  }
+}
+
 const activeDevice = computed(() => state.devices.find((d) => d.deviceId === state.activeId))
 
 /*
@@ -853,6 +898,7 @@ function onSessionEvent(method: string, payload: unknown): void {
     if (data['error'] === true) errorText.value = '历史加载失败，下拉重试'
     // 历史为空且没有新消息 → 明确告诉用户这是新会话
     if (items.value.length === 0) sessionStatus.value = 'idle'
+    void loadPlan()
     return
   }
 
@@ -1213,6 +1259,37 @@ onUnmounted(() => {
         </view>
       </view>
     </view>
+
+    <!-- 计划步骤：agent 打算做什么 -->
+    <view v-if="planSteps.length > 0" class="plan-bar" @tap="planOpen = !planOpen">
+      <view class="plan-head">
+        <text class="plan-t">计划 {{ doneSteps }}/{{ planSteps.length }}</text>
+        <text v-if="planActive" class="plan-mode mono">PLAN</text>
+        <view class="plan-chev" :class="{ open: planOpen }" />
+      </view>
+      <view v-if="planOpen" class="plan-list">
+        <view v-for="(st, i) in planSteps" :key="i" class="plan-item" :class="st.status">
+          <text class="plan-dot" />
+          <text class="plan-text">{{ st.text }}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 快捷指令：走宿主的命令注册表 -->
+    <scroll-view class="cmd-row" scroll-x>
+      <view class="cmd" @tap="runCommand('/plan')">
+        <text>计划</text>
+      </view>
+      <view class="cmd" @tap="runCommand('/plan off')">
+        <text>退出计划</text>
+      </view>
+      <view class="cmd" @tap="runCommand('/compact')">
+        <text>压缩上下文</text>
+      </view>
+      <view class="cmd" @tap="runCommand('/goal')">
+        <text>目标</text>
+      </view>
+    </scroll-view>
 
     <!-- 断线横幅：一直在，直到连上 -->
     <view v-if="linkDown" class="conn-bar" @tap="reconnectNow">
@@ -1938,6 +2015,45 @@ onUnmounted(() => {
 .diff-txt { flex: 1; min-width: 0; font-size: 11.5px; color: var(--t2); white-space: pre-wrap; word-break: break-all; }
 .diff-line.add .diff-sig, .diff-line.add .diff-txt { color: var(--acc); }
 .diff-line.del .diff-sig, .diff-line.del .diff-txt { color: var(--danger); }
+
+.plan-bar {
+  padding: 8px 14px;
+  border-top: 1px solid var(--bd);
+  background: var(--s1);
+}
+
+.plan-head { display: flex; align-items: center; gap: 8px; }
+.plan-t { font-size: 11.5px; color: var(--t2); }
+.plan-mode { font-size: 9px; padding: 1px 5px; border-radius: 4px; background: var(--acc-soft); color: var(--acc); }
+
+.plan-chev {
+  margin-left: auto;
+  width: 6px; height: 6px;
+  border-right: 1.5px solid var(--t3);
+  border-top: 1.5px solid var(--t3);
+  transform: rotate(135deg);
+}
+.plan-chev.open { transform: rotate(-45deg); }
+
+.plan-list { margin-top: 6px; }
+.plan-item { display: flex; gap: 7px; padding: 3px 0; }
+.plan-dot { flex: none; width: 5px; height: 5px; margin-top: 7px; border-radius: 3px; background: var(--t3); }
+.plan-item.completed .plan-dot { background: var(--acc); }
+.plan-item.in_progress .plan-dot { background: var(--warn, #e6b43c); }
+.plan-text { font-size: 11.5px; line-height: 17px; color: var(--t2); }
+.plan-item.completed .plan-text { color: var(--t3); text-decoration: line-through; }
+
+.cmd-row { white-space: nowrap; padding: 6px 12px; border-top: 1px solid var(--bd); }
+.cmd {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 5px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--bd);
+  background: var(--s1);
+}
+.cmd text { font-size: 11.5px; color: var(--t2); }
+.cmd:active { background: var(--s2); }
 
 .conn-bar {
   display: flex;
