@@ -16,6 +16,8 @@ import { Link, type LinkStatus } from './transport'
 /** 一次连接的上下文：连接 + 它属于哪台设备。 */
 interface Attached {
   readonly deviceId: string
+  /** 建立这条连接时用的地址。地址变了必须重建，不能复用旧 socket。 */
+  readonly url: string
   readonly link: Link
 }
 
@@ -37,16 +39,29 @@ export function connectionStatus(): LinkStatus {
  *
  * 幂等：已经连着同一台就直接返回，不重建 socket——切 tab 频繁调用也不会有副作用。
  */
+/**
+ * 连接一台设备。
+ *
+ * 两个关键判断：
+ *
+ * 1. **已有连接要检查地址是否一致**。原来只比 deviceId：同一台机器换了地址
+ *    （从局域网切到中继、或 DHCP 换了 IP）时，会继续复用旧 socket 连旧地址，
+ *    表现是"配对一直超时"。
+ *
+ * 2. **不因离线状态短路**。原来 `conn === 'offline'` 直接返回 undefined，
+ *    但用户主动点「配对」就是想连——离线只是上一次的观测结果，
+ *    不该让它阻止一次新的尝试。
+ */
 export function connectDevice(device: DeviceCard): Link | undefined {
-  if (attached !== undefined && attached.deviceId === device.deviceId) return attached.link
-  disconnect()
-
-  if (device.conn === 'offline') {
-    updateDevice(device.deviceId, { conn: 'offline' })
-    return undefined
+  const nextUrl = device.endpoint?.url
+  if (attached !== undefined) {
+    const sameUrl = attached.url === nextUrl
+    if (attached.deviceId === device.deviceId && sameUrl) return attached.link
+    // deviceId 相同但地址变了，或换了设备：必须重建，不能复用旧 socket
+    disconnect()
   }
 
-  const url = device.endpoint?.url
+  const url = nextUrl
   if (typeof url !== 'string' || url.length === 0) {
     // 没有 endpoint 说明还没配对成功（或配对信息丢了）。
     // 这里不抛错：让首页显示"需要重新配对"，比白屏好。
@@ -68,7 +83,7 @@ export function connectDevice(device: DeviceCard): Link | undefined {
     kind: device.endpoint?.kind ?? 'lan',
     ...(token === undefined ? {} : { token }),
   })
-  attached = { deviceId: device.deviceId, link }
+  attached = { deviceId: device.deviceId, url, link }
 
   link.onStatusChange((status) => {
     const conn: DeviceCard['conn'] =

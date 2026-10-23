@@ -79,6 +79,68 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
   .msg.ok { color: var(--acc); }
   .msg.err { color: var(--danger); }
   .msg.warn { color: var(--warn); }
+  /* ── 配对二维码 ───────────────────────────────────────────────────
+     必须用 grid + 固定宽高：之前只写了 HTML 没有这些样式，div 的
+     高度会塌成 0——格子生成了但一个都看不见，扫也没得扫。 */
+  .qr-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 14px;
+  }
+
+  .qr {
+    display: grid;
+    /* 宽高都要显式给：只有列模板没有行高，格子会被压成 0 高 */
+    width: 188px;
+    height: 188px;
+    padding: 10px;
+    box-sizing: content-box;
+    background: #fff;
+    border-radius: 8px;
+    /* 二维码必须像素级清晰，抗锯齿会让边缘模块糊掉 */
+    image-rendering: pixelated;
+  }
+
+  .qrc {
+    /* 用 1fr 的格子 + 100% 自身尺寸，避免 aspect-ratio 在某些 WebView 上失效 */
+    width: 100%;
+    height: 100%;
+    background: #fff;
+  }
+
+  .qrc.on { background: #000; }
+
+  .addr-box {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--bd);
+  }
+
+  .addr-title { font-size: 11px; color: var(--t3); margin-bottom: 6px; }
+
+  .addr-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .addr-row code {
+    flex: 1;
+    font-size: 11px;
+    color: var(--t2);
+    word-break: break-all;
+  }
+
+  .addr-row .copy {
+    flex: none;
+    height: 26px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+
   .code {
     font-size: 40px; letter-spacing: 12px; text-align: center; padding: 18px 0 10px;
     color: var(--acc); font-weight: 700;
@@ -147,6 +209,29 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
       <button class="danger" id="pw-clear" style="display:none">清除密码</button>
     </div>
     <div class="msg" id="pw-msg"></div>
+  </section>
+
+  <!-- 公网接入 -->
+  <section>
+    <h2>公网接入（可选）</h2>
+    <div class="desc">
+      不在同一局域网时，通过 nps / frp 这类内网穿透把 7443 映射到公网。
+      填公网可达的地址后，配对二维码会优先生成它——任何网络下都能连。
+      <br><span style="opacity:.7">安装与配置步骤见 docs/12-nps安装部署.md</span>
+    </div>
+    <label>中继地址</label>
+    <input id="relay-url" type="text" placeholder="wss://your-domain.example/dshlink">
+    <div class="row">
+      <button class="primary" id="relay-save">保存</button>
+      <button id="relay-clear">清除（只用局域网）</button>
+    </div>
+    <div class="msg" id="relay-msg"></div>
+    <div class="desc" id="relay-current" style="margin-top:8px;margin-bottom:0"></div>
+    <div class="desc" style="margin-top:10px;margin-bottom:0;border-left:2px solid rgba(232,194,74,.4);padding-left:10px">
+      <b style="color:var(--warn)">注意</b>：nps 的 TCP 隧道是裸转发、不加 TLS，
+      而本插件网关是明文 WebSocket。没有域名时请只用局域网，不要开公网。
+      有域名走「域名转发」才会是密文。
+    </div>
   </section>
 
   <!-- 配对 -->
@@ -271,6 +356,41 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
       })
   })
 
+  // ── 公网接入 ──────────────────────────────────────────────────────────
+  function loadRelay() {
+    api('/config/relay').then(function (out) {
+      if (out.status !== 200) return
+      var cur = out.body.relayUrl
+      document.getElementById('relay-url').value = cur || ''
+      document.getElementById('relay-current').innerHTML = cur
+        ? '当前生效：<code>' + esc(cur) + '</code>'
+        : '当前只用局域网地址（' + (out.body.endpoints || []).length + ' 个）'
+    })
+  }
+
+  document.getElementById('relay-save').addEventListener('click', function () {
+    var value = document.getElementById('relay-url').value.trim()
+    if (value.length > 0 && !/^wss?:\\/\\//.test(value)) {
+      say('relay-msg', '必须填 ws:// 或 wss:// 开头的地址', 'err')
+      return
+    }
+    api('/config/relay', { relayUrl: value }).then(function (out) {
+      if (out.status === 200) {
+        say('relay-msg', value.length === 0 ? '已清除，只用局域网' : '已保存，下次生成配对码即生效', 'ok')
+        loadRelay()
+      } else {
+        say('relay-msg', (out.body && out.body.error) || '保存失败', 'err')
+      }
+    })
+  })
+
+  document.getElementById('relay-clear').addEventListener('click', function () {
+    api('/config/relay', { relayUrl: '' }).then(function (out) {
+      if (out.status === 200) { say('relay-msg', '已清除', 'ok'); loadRelay() }
+      else say('relay-msg', '清除失败', 'err')
+    })
+  })
+
   // ── 配对 ──────────────────────────────────────────────────────────────
   document.getElementById('pair-start').addEventListener('click', function () {
     var btn = this
@@ -382,6 +502,7 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
 
   refreshStatus()
   refreshDevices()
+  loadRelay()
 })()
 </script>
 </body>

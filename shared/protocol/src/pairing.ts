@@ -60,36 +60,56 @@ export type PairUriResult =
  * "这不是配对码"（扫错了）和"码格式不对"（版本不兼容）。
  */
 export function decodePairUri(raw: string): PairUriResult {
-  const text = raw.trim()
-  if (!text.toLowerCase().startsWith(`${PAIR_SCHEME}://${PAIR_HOST}`)) {
-    return { ok: false, reason: 'not-pair-uri' }
+  // 归一化：扫码 SDK 会带尾部换行、BOM，也可能把 scheme 弄成大写。
+  // 这些都不该让配对失败——用户看到的码是对的，失败必须是我们解析的问题。
+  const text = raw.replace(/^\uFEFF/, '').trim()
+  const lower = text.toLowerCase()
+  const prefix = `${PAIR_SCHEME}://${PAIR_HOST}`
+  if (!lower.startsWith(prefix)) return { ok: false, reason: 'not-pair-uri' }
+
+  // 刻意**不用 new URL**：自定义 scheme 在各端 WebView 里行为不一致，
+  // 某些实现会把 `dshlink://pair?...` 解析成 host=`pair?h=...` 或直接抛错。
+  // 这里只做字符串切分，行为完全可预测。
+  // 用 lower 切分而不是 text：scheme/host 可能被扫码 SDK 转成大写，
+  // 但长度一致，所以按同一偏移切原文即可拿到原始 query
+  const rest = lower.slice(prefix.length)
+  const qIndex = rest.indexOf('?')
+  const query = qIndex >= 0 ? rest.slice(qIndex + 1) : ''
+
+  const params = new Map<string, string>()
+  for (const pair of query.split('&')) {
+    if (pair.length === 0) continue
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    const key = pair.slice(0, eq)
+    const value = pair.slice(eq + 1)
+    try {
+      params.set(key, decodeURIComponent(value))
+    } catch {
+      params.set(key, value)
+    }
   }
 
-  let url: URL
-  try {
-    url = new URL(text)
-  } catch {
-    return { ok: false, reason: 'not-pair-uri' }
-  }
-
-  const params = url.searchParams
-  const host = params.get('h') ?? ''
+  const host = (params.get('h') ?? '').trim()
   if (host.length === 0) return { ok: false, reason: 'missing-host' }
 
-  const portRaw = params.get('p') ?? ''
-  const port = Number.parseInt(portRaw, 10)
+  const port = Number.parseInt((params.get('p') ?? '').trim(), 10)
   if (!Number.isInteger(port) || port <= 0 || port > 65535) return { ok: false, reason: 'bad-port' }
 
-  const code = params.get('c') ?? ''
+  const code = (params.get('c') ?? '').trim()
   if (!/^\d{6}$/.test(code)) return { ok: false, reason: 'bad-code' }
 
-  const version = Number.parseInt(params.get('v') ?? String(PROTOCOL_VERSION), 10)
+  const versionRaw = Number.parseInt(params.get('v') ?? '', 10)
+  const version = Number.isInteger(versionRaw) ? versionRaw : PROTOCOL_VERSION
   const secure = params.get('s') === '1'
   const fingerprint = params.get('f') ?? undefined
-  const path = params.get('path') ?? '/dshlink'
+  const pathRaw = params.get('path') ?? '/dshlink'
+  const path = pathRaw.startsWith('/') ? pathRaw : `/${pathRaw}`
 
   const scheme = secure ? 'wss' : 'ws'
-  const wsUrl = `${scheme}://${host}:${String(port)}${path}`
+  // IPv6 地址要加方括号，否则拼出来的 URL 非法
+  const hostPart = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  const wsUrl = `${scheme}://${hostPart}:${String(port)}${path}`
 
   return {
     ok: true,
@@ -97,7 +117,7 @@ export function decodePairUri(raw: string): PairUriResult {
       host,
       port,
       code,
-      version: Number.isInteger(version) ? version : PROTOCOL_VERSION,
+      version,
       secure,
       ...(fingerprint === undefined ? {} : { fingerprint }),
       path,
