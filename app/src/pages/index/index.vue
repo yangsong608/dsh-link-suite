@@ -649,6 +649,14 @@ onLoad(() => {
           </view>
           <!-- usageLine 没内容时整行不渲染：一个孤零零的"—"看起来像加载失败 -->
           <view v-if="usageLine(d).length > 0" class="dev-use t2">{{ usageLine(d) }}</view>
+          <!-- 费用与峰谷：只在宿主装了 dsh-cost-meter 时出现 -->
+          <view
+            v-if="d.deviceId === state.activeId && (costText().length > 0 || peakText().length > 0)"
+            class="dev-cost"
+          >
+            <text v-if="costText().length > 0" class="cost mono">本次 {{ costText() }}</text>
+            <text v-if="peakText().length > 0" class="peak mono" :class="peakTone()">{{ peakText() }}</text>
+          </view>
           </MossTerm>
         </view>
       </view>
