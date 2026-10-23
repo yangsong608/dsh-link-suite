@@ -7,4 +7,9 @@ unpackage/
 *.tsbuildinfo
 .env
 .env.local
-# 插件运行时把配置和审计写到 ~/.dsh/dsh-link/，不在仓库内
+# 插件运行时把配置与审计写到 ~/.dsh/dsh-link/，不在仓库内
+# 截图脚本的临时产物
+docs/prototype/*.tmp.png
+coverage/
+.idea/
+.vscode/

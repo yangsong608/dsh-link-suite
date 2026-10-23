@@ -7,6 +7,7 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./client/lock-ui.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -57,7 +58,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node tests/lock.test.mjs",
+    "test": "npm run build && node tests/manifest.test.mjs && node tests/lock.test.mjs",
     "clean": "rm -rf lib"
   }
 }

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 构建与自测
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 三份子工程各自有锁文件；用 ci 而不是 install，锁文件漂移时直接失败。
+      - name: 安装依赖（协议 / 插件 / App）
+        run: |
+          npm --prefix shared/protocol ci
+          npm --prefix plugin ci
+          npm --prefix app ci
+
+      - name: 检查三份子工程
+        run: npm run check
