@@ -10,7 +10,7 @@
  */
 import { computed } from 'vue'
 import PageShell from '@/components/PageShell.vue'
-import { state, skin, type SkinMode } from '@/core/store'
+import { state, skin, markUserPreference, type SkinMode } from '@/core/store'
 import { haptic } from '@/core/haptic'
 
 const skins: { key: SkinMode; name: string; desc: string; dot: string }[] = [
@@ -30,19 +30,24 @@ const skinLabel = computed(() => {
   return state.skinMode === 'auto' ? `跟随 · ${resolved}` : resolved
 })
 
+// 每次改动都标记为"用户亲手选的"：这一位决定冷启动时是否跟随系统主题。
+// 少了它，浅色模式当时生效、重启被系统改回——表现为"配置没生效"。
 function pickSkin(k: SkinMode): void {
   haptic('light')
   state.skinMode = k
+  markUserPreference('skin')
 }
 
 function toggleLight(): void {
   haptic('light')
   state.light = !state.light
+  markUserPreference('light')
 }
 
 function toggleLite(): void {
   haptic('light')
   state.lite = !state.lite
+  markUserPreference('lite')
 }
 
 function goTab(tab: 'devices' | 'sessions' | 'me'): void {

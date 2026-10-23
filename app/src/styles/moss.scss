@@ -215,8 +215,23 @@
 
 /* ── 按钮 ───────────────────────────────────────────────────────────── */
 
+/**
+ * 按钮。
+ *
+ * 三条规则来自实际看屏幕得到的结论，不是审美偏好：
+ *   1. **最小 44px 触控高度**（iOS HIG / Material 的共同下限）。低于这个值
+ *      手指按不准，在手机上最常见的表现是"点了没反应"，其实点偏了。
+ *   2. **`:active` 必须有肉眼可见的反馈**。uni-app 的 @tap 不会保持 :active，
+ *      所以要同时给 :active 与 .is-press（脚本按下时加）两种状态。
+ *   3. **flex:1 时 min-width:0**：否则按钮内的长文本（"配对中…"）会把
+ *      并排的两个按钮挤成不等宽，视觉上像布局坏了。
+ */
 .btn {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
   height: 44px;
+  padding: 0 16px;
   border-radius: var(--r-md);
   display: flex;
   align-items: center;
@@ -224,13 +239,20 @@
   gap: 8px;
   font-size: 14px;
   font-weight: 500;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border: 1px solid var(--bd);
   background: var(--s1);
   color: var(--t1);
-  transition: transform var(--t-fast) var(--ease-out), background var(--t-fast);
+  transition: transform 120ms var(--ease-out), background 120ms var(--ease-out),
+    opacity 120ms var(--ease-out), box-shadow 120ms var(--ease-out);
 }
 
-.btn:active { transform: scale(0.975); background: var(--s2); }
+.btn:active,
+.btn.is-press { transform: scale(0.975); background: var(--s2); }
 
 .btn.primary {
   background: var(--acc);
@@ -240,8 +262,35 @@
   box-shadow: 0 6px 20px var(--acc-soft);
 }
 
+.btn.primary:active,
+.btn.primary.is-press {
+  background: var(--acc);
+  transform: scale(0.96);
+  box-shadow: 0 2px 10px var(--acc-soft);
+}
+
 .btn.ghost {
   background: transparent;
+}
+
+.btn.ghost:active,
+.btn.ghost.is-press { background: var(--s2); }
+
+/* 危险动作单独一档颜色：不靠"红色描边"暗示，要有可读的对比 */
+.btn.alert {
+  background: transparent;
+  border-color: var(--danger-bd);
+  color: var(--danger);
+}
+
+.btn.alert:active,
+.btn.alert.is-press { background: var(--danger-soft); }
+
+/* 禁用态必须真的看起来不可用，否则用户会反复点 */
+.btn[disabled],
+.btn.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 /* ── 动效工具 ───────────────────────────────────────────────────────── */
@@ -310,8 +359,39 @@
   transform-origin: 0 0;
 }
 
-.safe-top { padding-top: calc(env(safe-area-inset-top) + 8px); }
-.safe-bottom { padding-bottom: calc(env(safe-area-inset-bottom) + 8px); }
+/**
+ * 安全区。
+ *
+ * 这里踩过一个坑：只用 `env(safe-area-inset-top)` 在 uni-app 的 App 端
+ * （Android 尤其明显）返回 0——那个变量是 H5/WebView 的 viewport-fit 特性，
+ * 原生运行时不一定填充。表现就是标题被状态栏压住。
+ *
+ * 改成三层兜底，取最大可用值：
+ *   1. `--status-bar-height`：uni-app 在 App 端注入的状态栏高度（真值来源）
+ *   2. `env(safe-area-inset-top)`：刘海屏 H5 的情况
+ *   3. 24px：两者都拿不到时的保守值（约等于多数 Android 状态栏）
+ *
+ * 用 max() 而不是相加：状态栏高度本来就包含在安全区里，相加会导致顶部过高。
+ */
+.dsh {
+  --sb-top: var(--status-bar-height, 0px);
+  --safe-top-real: max(var(--sb-top), env(safe-area-inset-top), 24px);
+  --safe-bottom-real: max(env(safe-area-inset-bottom), 8px);
+}
+
+/**
+ * 安全区工具类。
+ *
+ * 用 `:global()` 包起来，原因是一个真实踩过的坑：
+ * 页面/组件都是 `<style scoped>`，scoped 会给本组件的类加 data-v 属性，
+ * 而全局样式里写的 `.safe-top` 没有那个属性——**选择器匹配不上，样式不生效**。
+ * 表现就是"顶部被状态栏压住、底部被手势条压住"，而且在桌面浏览器里
+ * 完全看不出来（那里 env() 是 0，看不出差别）。
+ *
+ * :global() 让这个类不参与 scoped 改写，才能从任意页面引用。
+ */
+:global(.safe-top) { padding-top: calc(var(--safe-top-real) + 8px); }
+:global(.safe-bottom) { padding-bottom: calc(var(--safe-bottom-real) + 8px); }
 
 /**
  * 滚动容器。
@@ -326,7 +406,7 @@
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   /* 给底部固定导航让位，否则最后一行永远压在 tabbar 下面 */
-  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+  padding-bottom: calc(76px + var(--safe-bottom-real, env(safe-area-inset-bottom)));
 }
 
 /* 减少动效偏好：只留 200ms 淡入 */

@@ -59,6 +59,14 @@ function go(key: 'devices' | 'sessions' | 'me'): void {
 </template>
 
 <style lang="scss" scoped>
+/**
+ * 底部导航。
+ *
+ * 这里原本写 `class="tabbar safe-bottom"`，但 safe-bottom 定义在全局
+ * moss.scss 里——scoped 样式给本组件的类加 data-v 属性，而全局规则没有
+ * 那个属性，选择器匹配不上。表现是底部导航紧贴屏幕下沿，全面屏手势条
+ * 压住了 tab 文字。所以安全区必须写在本组件的 scoped 样式里。
+ */
 .tabbar {
   position: fixed;
   left: 0;
@@ -68,6 +76,8 @@ function go(key: 'devices' | 'sessions' | 'me'): void {
   display: flex;
   align-items: center;
   padding-top: 8px;
+  /* --safe-bottom-real 由 moss.scss 的 .dsh 定义（含 Android 兜底值） */
+  padding-bottom: calc(var(--safe-bottom-real, env(safe-area-inset-bottom)) + 2px);
   background: linear-gradient(180deg, transparent, var(--bg) 42%);
   border-top: 1px solid var(--bd);
 }

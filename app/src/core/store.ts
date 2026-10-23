@@ -91,14 +91,35 @@ export const state = reactive<AppState>({
  */
 const PREFS_KEY = 'dsh-link/prefs'
 
-export const prefs = { lightStored: false, liteStored: false }
+/**
+ * 用户是否**亲手**改过这些开关。
+ *
+ * 这个标记决定冷启动时要不要跟随系统主题：改过就不能覆盖，
+ * 否则用户在设置里选的浅色会在下次启动被系统悄悄改回去——
+ * 那是"设置不生效"最典型的形态。
+ *
+ * 注意 `lightStored` 必须在**用户操作时**置位，不能只在读缓存时置位：
+ * 只在读缓存置位的话，第一次手动切换当时生效、重启就丢，更难排查。
+ */
+export const prefs = { lightStored: false, liteStored: false, skinStored: false }
+
+/** 用户在"我的"页面里动过的开关，统一在这里标记，避免散落在各页面。 */
+export function markUserPreference(field: 'light' | 'lite' | 'skin'): void {
+  if (field === 'light') prefs.lightStored = true
+  else if (field === 'lite') prefs.liteStored = true
+  else prefs.skinStored = true
+  savePrefs()
+}
 
 ;(function loadPrefs() {
   try {
     const raw = uni.getStorageSync(PREFS_KEY)
     if (!raw) return
     const p = JSON.parse(String(raw)) as Partial<Pick<AppState, 'skinMode' | 'light' | 'lite'>>
-    if (p.skinMode === 'auto' || p.skinMode === 'moss' || p.skinMode === '550w') state.skinMode = p.skinMode
+    if (p.skinMode === 'auto' || p.skinMode === 'moss' || p.skinMode === '550w') {
+      state.skinMode = p.skinMode
+      prefs.skinStored = true
+    }
     if (typeof p.light === 'boolean') { state.light = p.light; prefs.lightStored = true }
     if (typeof p.lite === 'boolean') { state.lite = p.lite; prefs.liteStored = true }
   } catch {
@@ -106,18 +127,21 @@ export const prefs = { lightStored: false, liteStored: false }
   }
 })()
 
+/** 落盘。watch 与显式调用共用同一份，避免两处写法不一致。 */
+function savePrefs(): void {
+  try {
+    uni.setStorageSync(
+      PREFS_KEY,
+      JSON.stringify({ skinMode: state.skinMode, light: state.light, lite: state.lite }),
+    )
+  } catch {
+    // 存储满了/被禁用：不影响当前会话的视觉
+  }
+}
+
 watch(
   () => [state.skinMode, state.light, state.lite] as const,
-  () => {
-    try {
-      uni.setStorageSync(
-        PREFS_KEY,
-        JSON.stringify({ skinMode: state.skinMode, light: state.light, lite: state.lite }),
-      )
-    } catch {
-      // 存储满了/被禁用：不影响当前会话的视觉
-    }
-  },
+  () => { savePrefs() },
 )
 
 /**

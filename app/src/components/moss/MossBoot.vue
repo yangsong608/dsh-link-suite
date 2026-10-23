@@ -56,16 +56,25 @@ function skip(): void {
 
 onMounted(() => {
   if (props.quick) {
-    at(120, () => (visible.value = 4))
-    at(300, skip)
+    at(160, () => (visible.value = 4))
+    at(700, skip)
     return
   }
-  // 逐行打字：每 110ms 一行
-  for (let i = 1; i <= 4; i++) at(80 + i * 110, () => (visible.value = i))
-  at(520, () => (phase.value = 'emblem'))
-  at(900, () => (phase.value = 'flip'))
-  at(1180, () => (phase.value = 'out'))
-  at(1400, finish)
+  // 节奏说明：原来的 1400ms 全程太快——四行日志每 110ms 就刷完，
+  // 眼睛还没读完就翻篇了，看起来像"闪了一下"。启动动画的作用是
+  // 让等待有质感，不是抢时间，所以每一段都要留出可读的停顿。
+  //
+  //   0.0–1.5s  逐行打字（每行 240ms，够读一个单词）
+  //   1.5–2.3s  停顿，让最后一行"READY"被看见
+  //   2.3s      出徽标
+  //   3.0s      翻转（徽标 → MOSS）
+  //   3.8s      淡出
+  //   4.2s      完成
+  for (let i = 1; i <= 4; i++) at(180 + i * 240, () => (visible.value = i))
+  at(1500, () => (phase.value = 'emblem'))
+  at(2300, () => (phase.value = 'flip'))
+  at(3000, () => (phase.value = 'out'))
+  at(4200, finish)
 })
 
 onBeforeUnmount(() => {
