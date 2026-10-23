@@ -11,7 +11,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import { state, skinClass, themeClass, liteClass, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
 import { humanBytes, pickFile, pickImage } from '@/core/attach'
-import { currentLink, connectDevice, disconnect, refreshAll, setSessionListener } from '@/core/link'
+import { currentLink, connectDevice, connectionStatus, disconnect, refreshAll, setSessionListener } from '@/core/link'
 import MossDot from '@/components/moss/MossDot.vue'
 import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
 import MossMarkdown from '@/components/MossMarkdown.vue'
@@ -43,7 +43,42 @@ const wide = ref(false)
  * 失败提示又跑到聊天流顶部——他只会觉得"发了没反应"。
  */
 const activeDevice = computed(() => state.devices.find((d) => d.deviceId === state.activeId))
-const linkDown = computed(() => activeDevice.value !== undefined && activeDevice.value.conn !== 'online')
+
+/*
+ * 用**真实链路状态**，不用 device.conn。
+ *
+ * device.conn 是界面缓存：refreshAll 会把所有宿主设备标成 online，
+ * 别的地方又会改它，切换模型之类的一次刷新就可能让它短暂不等于 online，
+ * 于是横幅误报"已断开"。
+ *
+ * 再加 2 秒防抖：链路状态在 RPC 密集时会有瞬时抖动，
+ * 一抖就弹横幅既吵又难点（横幅本身还在动）。
+ */
+const linkOnline = ref(true)
+let offlineTicks = 0
+let connTimer: ReturnType<typeof setInterval> | undefined
+const linkDown = computed(() => !linkOnline.value)
+
+function tickConn(): void {
+  const online = connectionStatus() === 'online'
+  if (online) {
+    offlineTicks = 0
+    linkOnline.value = true
+    return
+  }
+  offlineTicks += 1
+  // 连续 2 次（约 2 秒）不恢复才认为真的断了
+  if (offlineTicks >= 2) linkOnline.value = false
+}
+
+function startConnWatch(): void {
+  tickConn()
+  connTimer = setInterval(tickConn, 1000)
+}
+
+function stopConnWatch(): void {
+  if (connTimer !== undefined) { clearInterval(connTimer); connTimer = undefined }
+}
 
 function reconnectNow(): void {
   const device = activeDevice.value
@@ -935,6 +970,7 @@ function onSessionEvent(method: string, payload: unknown): void {
 onLoad((q) => {
   updateWide()
   bindResize()
+  startConnWatch()
   const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
   host.value = device?.name ?? ''
   if (device !== undefined) connectDevice(device)
@@ -976,6 +1012,7 @@ onLoad((q) => {
 // 没有导出（运行时有，但 vue-tsc 会红）。行为等价，且这里本来就只关心组件销毁。
 onUnmounted(() => {
   unbindResize()
+  stopConnWatch()
   // 页面离开就取消监听，避免回退后旧页面的闭包继续改 items
   setSessionListener(undefined)
 })
@@ -1907,7 +1944,11 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 9px 14px;
+  /* 够高的点击区：横幅本身要能一按就中 */
+  min-height: 44px;
+  padding: 12px 14px;
+  position: relative;
+  z-index: 6;
   background: var(--warn-soft, rgba(230, 180, 60, 0.14));
   border-top: 1px solid var(--bd);
 }
