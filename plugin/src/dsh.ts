@@ -64,6 +64,14 @@ export interface SessionController {
   list(request: { cursor?: string }, signal: AbortSignal): Promise<unknown>
   rename(request: { sessionId: string; title: string }): Promise<unknown>
   modelCatalog?(): Promise<unknown>
+  /** 读投影（队列就在 values.inbox）。冷会话也能读，不需要唤醒 agent。 */
+  projections?(request: { sessionId: string }): Promise<unknown>
+  /** 修改队列项：edit / remove / steer。 */
+  updateQueue?(request: {
+    sessionId: string
+    itemId: string
+    action: { kind: 'edit'; content: { type: 'text'; text: string }[] } | { kind: 'remove' } | { kind: 'steer' }
+  }): Promise<unknown>
   selectModel?(request: { sessionId: string; provider: string; model: string }): Promise<unknown>
   prompt(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   cancel(request: { sessionId: string }): Promise<unknown>

@@ -8,9 +8,9 @@
  */
 import { computed, nextTick, onUnmounted, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { state, skinClass, themeClass, liteClass } from '@/core/store'
+import { state, skinClass, themeClass, liteClass, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
-import { currentLink, connectDevice, setSessionListener } from '@/core/link'
+import { currentLink, connectDevice, refreshAll, setSessionListener } from '@/core/link'
 import MossDot from '@/components/moss/MossDot.vue'
 
 type Item =
@@ -18,6 +18,38 @@ type Item =
   | { k: 'assist'; text: string; at: string; streaming?: boolean }
   | { k: 'activity'; tool: string; summary: string; ms: string; ok?: boolean; callId?: string }
   | { k: 'approval'; id: string; cmd: string; risk: string; state: 'pending' | 'ok' | 'no'; at: string }
+
+/**
+ * 三段视图（对应设计文档 08-v2 §3.3，参考 Qoder「看进度 + 验收成果」）。
+ *
+ *   chat  对话      —— 人话与工具摘要，回答"它在做什么"
+ *   trace 执行过程  —— 全量事件（think/tool/text/note），回答"具体做了什么"
+ *   files 产物      —— 这一轮改了哪些文件，回答"我能验收什么"
+ *
+ * 手机上三段是**切换**不是并列：并列会把每一段挤到读不了。
+ * 平板横屏时列表与内容并排（见 sessions 页的三栏）。
+ */
+/** 宽屏（平板横屏/大屏）时启用三栏：会话列表 / 对话 / 产物。 */
+const wide = ref(false)
+
+function updateWide(): void {
+  try {
+    const info = uni.getWindowInfo?.() ?? uni.getSystemInfoSync()
+    wide.value = Number(info.windowWidth ?? 0) >= 1000
+  } catch {
+    wide.value = false
+  }
+}
+
+const tab = ref<'chat' | 'trace' | 'files'>('chat')
+
+/** 执行过程：保留原始 trace 事件，不去重不合并。 */
+const traceItems = ref<{ k: string; label: string; detail?: string; at: string }[]>([])
+/** 产物：文件变更列表（由 session.changes 填充）。 */
+const fileItems = ref<{ path: string; op: string; additions?: number; deletions?: number }[]>([])
+/** 产物是近似的：只有文件工具的记录，没有 shell/git。必须告诉用户。 */
+const changesNote = ref('')
+const diffView = ref<{ path: string; hunks: { t: string; s: string }[] } | undefined>(undefined)
 
 const title = ref('会话')
 const host = ref('')
@@ -145,7 +177,20 @@ const models = ref<{
   models: { id: string; name: string; reasoning?: unknown }[]
 }[]>([])
 const selectedModel = ref<{ provider: string; model: string } | undefined>(undefined)
-const queueCount = ref(0)
+/**
+ * 队列（dsh 的 agent inbox）。
+ *
+ * 两个列表语义不同：
+ *   nextTurn = 下一轮开始前依次执行（FIFO，每轮一条）
+ *   nextStep = 在下一个 step 边界插进去（steer，立刻影响当前这轮）
+ * 用户不需要知道这些名词，但界面要把"排队"和"插话"分开，
+ * 否则他会疑惑"我发的消息为什么没生效"。
+ */
+const queue = ref<{ nextTurn: { itemId: string; text: string }[]; nextStep: { itemId: string; text: string }[] }>({
+  nextTurn: [],
+  nextStep: [],
+})
+const queueCount = computed(() => queue.value.nextTurn.length + queue.value.nextStep.length)
 
 const modelLabel = computed(() => {
   const m = selectedModel.value
@@ -157,6 +202,99 @@ const modelLabel = computed(() => {
   }
   return m.model
 })
+
+/** 拉一次队列快照。agent 运行时也要拉——排队项正是这时候才存在。 */
+async function loadQueue(): Promise<void> {
+  const link = currentLink()
+  if (link === undefined || sessionId.value === '') return
+  try {
+    const out = await link.call<{
+      nextTurn: { itemId: string; text: string }[]
+      nextStep: { itemId: string; text: string }[]
+    }>('session.queue.list', { sessionId: sessionId.value })
+    queue.value = { nextTurn: out.nextTurn ?? [], nextStep: out.nextStep ?? [] }
+  } catch {
+    // 老宿主没有队列接口：不显示队列区，而不是报错
+    queue.value = { nextTurn: [], nextStep: [] }
+  }
+}
+
+async function loadChanges(): Promise<void> {
+  const link = currentLink()
+  if (link === undefined || sessionId.value === '') return
+  try {
+    const out = await link.call<{
+      files: { path: string; op: string; additions: number; deletions: number }[]
+      approximate?: boolean
+      note?: string
+    }>('session.changes', { sessionId: sessionId.value })
+    fileItems.value = out.files ?? []
+    changesNote.value = out.approximate === true ? (out.note ?? '') : ''
+  } catch {
+    fileItems.value = []
+  }
+}
+
+/** 点开一个文件看差异。手机上用弹层显示，避免再做一层路由。 */
+async function openDiff(f: { path: string }): Promise<void> {
+  haptic('light')
+  const link = currentLink()
+  if (link === undefined) return
+  try {
+    const d = await link.call<{ path: string; additions: number; deletions: number; hunks: { t: string; s: string }[] }>(
+      'session.diff', { sessionId: sessionId.value, path: f.path },
+    )
+    diffView.value = d
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '读取失败', icon: 'none' })
+  }
+}
+
+async function queueRemove(itemId: string): Promise<void> {
+  haptic('medium')
+  const link = currentLink()
+  if (link === undefined) return
+  try {
+    await link.call('session.queue.remove', { sessionId: sessionId.value, itemId })
+    await loadQueue()
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '删除失败', icon: 'none' })
+  }
+}
+
+async function queueSteer(itemId: string): Promise<void> {
+  haptic('medium')
+  const link = currentLink()
+  if (link === undefined) return
+  try {
+    await link.call('session.queue.steer', { sessionId: sessionId.value, itemId })
+    await loadQueue()
+    uni.showToast({ title: '已插到当前这轮的下一步', icon: 'none' })
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 20) : '插话失败', icon: 'none' })
+  }
+}
+
+async function queueEdit(item: { itemId: string; text: string }): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) return
+  uni.showModal({
+    title: '修改排队消息',
+    editable: true,
+    content: item.text,
+    success: async (res) => {
+      if (!res.confirm) return
+      const text = String(res.content ?? '').trim()
+      if (text.length === 0) return
+      try {
+        await link.call('session.queue.edit', { sessionId: sessionId.value, itemId: item.itemId, text })
+        await loadQueue()
+      } catch (e) {
+        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '修改失败', icon: 'none' })
+      }
+    },
+  })
+}
 
 async function loadCatalog(): Promise<void> {
   if (models.value.length > 0) return
@@ -179,7 +317,10 @@ function pickModel(): void {
   haptic('light')
   const link = currentLink()
   if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
-  void loadCatalog().then(() => {
+  void loadCatalog()
+  void loadQueue()
+  // 宽屏右栏是常驻的，所以进页面就要有产物数据（窄屏等切到 tab 再拉）
+  if (wide.value) void loadChanges().then(() => {
     /**
      * 摊平模型列表。分组用「提供商 · 模型名」避免同名模型混淆
      * （实测目录里多个 provider 都有 fine-tune 版本）。
@@ -226,6 +367,35 @@ async function cancelRun(): Promise<void> {
   } catch (e) {
     uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '取消失败', icon: 'none' })
   }
+}
+
+/** 变更类型的单字标识：+ 新增 / ~ 修改 / − 删除 / → 改名 */
+function opLabel(op: string): string {
+  switch (op) {
+    case 'add': return '+'
+    case 'mod': return '~'
+    case 'del': return '−'
+    case 'rename': return '→'
+    default: return '·'
+  }
+}
+
+/**
+ * 左栏：切会话。
+ *
+ * 宽屏下不该为了换会话退回列表页——那会把整页状态丢掉。
+ * 这里只做"平铺 + 工作区名"的最小实现，不重复列表页的分组交互。
+ */
+function switchSession(row: SessionRow): void {
+  if (row.id === sessionId.value) return
+  haptic('light')
+  uni.redirectTo({ url: `/pages/chat/chat?id=${row.id}` })
+}
+
+function onTab(next: 'chat' | 'trace' | 'files'): void {
+  haptic('light')
+  tab.value = next
+  if (next === 'files') void loadChanges()
 }
 
 async function scrollToEnd(): Promise<void> {
@@ -275,6 +445,21 @@ async function send(): Promise<void> {
     // requestId 由客户端生成并应持久化：断线重发时宿主靠它去重。
     // 这里用时间戳+随机串，够用且不引依赖。
     const requestId = `r_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+
+    /*
+     * 运行中就走队列，不要硬塞给当前这轮。
+     *
+     * 用户此刻发的多半是"顺便再改一下"，硬 steer 会打断 agent 正在做的事；
+     * 排到下一轮则不会干扰，而且界面上能看到它确实排上了。
+     * 空闲时直接发（等价于开新的一轮）。
+     */
+    if (sessionStatus.value === 'running') {
+      await link.call('session.queue.push', { sessionId: sessionId.value, text, requestId })
+      await loadQueue()
+      uni.showToast({ title: '已加入队列，当前这轮结束后执行', icon: 'none' })
+      return
+    }
+
     await link.call('session.prompt', { sessionId: sessionId.value, text, requestId })
   } catch (error) {
     errorText.value = `发送失败：${error instanceof Error ? error.message : String(error)}`
@@ -302,6 +487,24 @@ function onSessionEvent(method: string, payload: unknown): void {
     // 历史为空且没有新消息 → 明确告诉用户这是新会话
     if (items.value.length === 0) sessionStatus.value = 'idle'
     return
+  }
+
+  // 执行过程：原样收进 traceItems，供"执行过程"页展示
+  if (method === 'session.trace') {
+    const kind = String(data['k'] ?? '')
+    const label =
+      kind === 'tool' ? String(data['tool'] ?? 'tool')
+        : kind === 'think' ? '思考'
+          : kind === 'text' ? '回复'
+            : kind === 'note' ? String(data['text'] ?? '轮次')
+              : kind === 'approval' ? '审批'
+                : kind
+    const detail =
+      kind === 'tool' ? String(data['target'] ?? '')
+        : kind === 'think' ? String(data['summary'] ?? '')
+          : kind === 'text' ? String(data['text'] ?? '').slice(0, 120)
+            : ''
+    traceItems.value.push({ k: kind, label, ...(detail.length > 0 ? { detail } : {}), at: nowLabel() })
   }
 
   // 执行过程中的轮次边界即状态转换
@@ -394,9 +597,13 @@ function onSessionEvent(method: string, payload: unknown): void {
 }
 
 onLoad((q) => {
+  updateWide()
   const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
   host.value = device?.name ?? ''
   if (device !== undefined) connectDevice(device)
+
+  // 宽屏左栏需要会话列表；顺手刷新一次（幂等，代价很小）
+  if (wide.value) void refreshAll()
 
   const id = q !== undefined && typeof q['id'] === 'string' ? q['id'] : ''
   sessionId.value = id
@@ -412,6 +619,9 @@ onLoad((q) => {
   // 进页面就拉模型目录：否则模型栏永远显示"默认模型"，
   // 用户不知道当前用的是哪个模型。
   void loadCatalog()
+  void loadQueue()
+  // 宽屏右栏是常驻的，所以进页面就要有产物数据（窄屏等切到 tab 再拉）
+  if (wide.value) void loadChanges()
 
   const link = currentLink()
   if (link !== undefined && id !== '') {
@@ -434,10 +644,34 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <view :class="rootClass">
+  <view :class="[rootClass, { wide }]">
     <view class="veil" />
     <view class="grain" />
 
+    <!-- 宽屏三栏：左＝会话列表，中＝当前对话，右＝产物 -->
+    <view v-if="wide" class="rail-left">
+      <view class="rail-head">
+        <text class="rail-title">会话</text>
+        <text class="mono t3">{{ state.sessions.length }}</text>
+      </view>
+      <scroll-view class="rail-scroll" scroll-y>
+        <view
+          v-for="r in state.sessions"
+          :key="r.id"
+          class="rail-item"
+          :class="{ on: r.id === sessionId }"
+          @tap="switchSession(r)"
+        >
+          <view class="rail-dot" :class="r.status" />
+          <view class="rail-body">
+            <text class="rail-name">{{ r.title }}</text>
+            <text class="rail-meta t3">{{ r.status }}</text>
+          </view>
+        </view>
+      </scroll-view>
+    </view>
+
+    <view class="chat-main">
     <view class="top safe-top">
       <!-- 返回箭头用 CSS 画：uni-app 的 App 端对内联 SVG 支持不稳定，
            之前这里渲染成一片空白（用户看到"左上角有一块空白"）。 -->
@@ -456,7 +690,21 @@ onUnmounted(() => {
       <view class="more mono t3" @tap="chatMenu">···</view>
     </view>
 
-    <scroll-view class="flow" scroll-y :scroll-top="scrollTop" :scroll-with-animation="true">
+    <!-- 分段控件：三段视图切换。手上有"看进度/验收"两种意图，混在一页会互相干扰 -->
+    <view class="segs">
+      <view
+        v-for="sg in ([['chat','对话'],['trace','执行过程'],['files','产物']] as const)"
+        :key="sg[0]"
+        class="seg"
+        :class="{ on: tab === sg[0] }"
+        @tap="onTab(sg[0])"
+      >
+        <text>{{ sg[1] }}</text>
+        <text v-if="sg[0] === 'files' && fileItems.length > 0" class="seg-n mono">{{ fileItems.length }}</text>
+      </view>
+    </view>
+
+    <scroll-view v-if="tab === 'chat'" class="flow" scroll-y :scroll-top="scrollTop" :scroll-with-animation="true">
       <view class="daystamp mono">2026-10-23</view>
 
       <template v-for="(it, i) in items" :key="i">
@@ -509,6 +757,64 @@ onUnmounted(() => {
       <view class="tail" />
     </scroll-view>
 
+    <!-- 执行过程：全量事件流。这里不做合并——用户来这一页就是想看细节 -->
+    <scroll-view v-else-if="tab === 'trace'" class="flow" scroll-y>
+      <view v-if="traceItems.length === 0" class="empty-block">
+        <text class="empty-t">还没有执行过程</text>
+        <text class="empty-d t3">agent 开始工作后，这里会按时间顺序列出每一步。</text>
+      </view>
+      <view v-for="(t, i) in traceItems" :key="i" class="trace-row">
+        <text class="trace-k mono">{{ t.label }}</text>
+        <text v-if="t.detail" class="trace-d">{{ t.detail }}</text>
+        <text class="trace-t mono">{{ t.at }}</text>
+      </view>
+      <view class="tail" />
+    </scroll-view>
+
+    <!-- 产物：这一轮改了哪些文件 -->
+    <scroll-view v-else class="flow" scroll-y>
+      <view v-if="fileItems.length === 0" class="empty-block">
+        <text class="empty-t">这一轮还没有产物</text>
+        <text class="empty-d t3">agent 写入或修改文件后会出现在这里。</text>
+      </view>
+      <view v-if="fileItems.length > 0 && changesNote.length > 0" class="changes-note t3">
+        {{ changesNote }}
+      </view>
+      <view v-for="(f, i) in fileItems" :key="i" class="file-row" @tap="openDiff(f)">
+        <view class="file-op" :class="f.op">{{ opLabel(f.op) }}</view>
+        <text class="file-p mono">{{ f.path }}</text>
+        <text v-if="f.additions !== undefined" class="file-n mono">
+          +{{ f.additions }}<text v-if="f.deletions"> −{{ f.deletions }}</text>
+        </text>
+      </view>
+      <view class="tail" />
+    </scroll-view>
+
+    <!-- 队列坞：只在有排队消息时出现。分「待发」与「插话」两类，
+         让用户明白自己那条消息什么时候会生效 -->
+    <view v-if="queueCount > 0" class="queue-dock">
+      <view class="queue-head">
+        <text class="queue-title">队列 {{ queueCount }} 条</text>
+        <text class="queue-hint t3">当前这轮结束后依次执行</text>
+      </view>
+      <view v-for="q in queue.nextTurn" :key="q.itemId" class="queue-row">
+        <text class="queue-text">{{ q.text }}</text>
+        <view class="queue-acts">
+          <text class="qact" @tap="queueSteer(q.itemId)">插话</text>
+          <text class="qact" @tap="queueEdit(q)">改</text>
+          <text class="qact danger" @tap="queueRemove(q.itemId)">删</text>
+        </view>
+      </view>
+      <view v-for="q in queue.nextStep" :key="q.itemId" class="queue-row stepping">
+        <text class="queue-tag mono">下一步</text>
+        <text class="queue-text">{{ q.text }}</text>
+        <view class="queue-acts">
+          <text class="qact" @tap="queueEdit(q)">改</text>
+          <text class="qact danger" @tap="queueRemove(q.itemId)">删</text>
+        </view>
+      </view>
+    </view>
+
     <view class="composer safe-bottom">
       <!-- 模型选择：与 dsh 同步，改变后续回合用的模型 -->
       <view class="modelbar">
@@ -543,6 +849,38 @@ onUnmounted(() => {
         >
           <view class="ico-up" />
         </view>
+      </view>
+    </view>
+    </view>
+
+    <!-- 宽屏右栏：产物常驻，不用切 tab -->
+    <view v-if="wide" class="rail-right">
+      <view class="rail-head">
+        <text class="rail-title">产物</text>
+        <text class="mono t3">{{ fileItems.length }}</text>
+      </view>
+      <scroll-view class="rail-scroll" scroll-y>
+        <view v-if="fileItems.length === 0" class="rail-empty t3">这一轮还没有产物</view>
+        <view v-for="(f, i) in fileItems" :key="i" class="file-row" @tap="openDiff(f)">
+          <view class="file-op" :class="f.op">{{ opLabel(f.op) }}</view>
+          <text class="file-p mono">{{ f.path }}</text>
+        </view>
+      </scroll-view>
+    </view>
+
+    <!-- 差异弹层：手机上一页只放一个文件，底部抽屉式 -->
+    <view v-if="diffView !== undefined" class="diff-mask" @tap="diffView = undefined">
+      <view class="diff-panel" @tap.stop>
+        <view class="diff-head">
+          <text class="diff-path mono">{{ diffView.path }}</text>
+          <text class="diff-close" @tap="diffView = undefined">关闭</text>
+        </view>
+        <scroll-view class="diff-body" scroll-y>
+          <view v-for="(l, i) in diffView.hunks" :key="i" class="diff-line" :class="l.t === '+' ? 'add' : l.t === '-' ? 'del' : ''">
+            <text class="diff-sig mono">{{ l.t }}</text>
+            <text class="diff-txt mono">{{ l.s }}</text>
+          </view>
+        </scroll-view>
       </view>
     </view>
   </view>
@@ -606,6 +944,164 @@ onUnmounted(() => {
   padding: 0 var(--gutter, 14px);
   box-sizing: border-box;
 }
+
+/*
+ * 三栏（≥1000px）：
+ *   左 240 会话列表 | 中 flex 对话 | 右 300 产物
+ * 窄屏时 .wide 不生效，chat-main 独占整屏，布局与原来一致。
+ */
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.dsh.wide { flex-direction: row; }
+
+.rail-left,
+.rail-right {
+  flex: none;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--s1);
+}
+
+.rail-left { width: 240px; border-right: 1px solid var(--bd); }
+.rail-right { width: 300px; border-left: 1px solid var(--bd); }
+
+.rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 12px 8px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.rail-title { font-size: 12.5px; color: var(--t2); font-weight: 600; letter-spacing: 0.4px; }
+.rail-scroll { flex: 1; height: 0; padding: 4px 8px; }
+.rail-empty { padding: 20px 8px; font-size: 11.5px; line-height: 17px; }
+
+.rail-item {
+  display: flex;
+  gap: 8px;
+  padding: 9px 8px;
+  border-radius: 8px;
+  align-items: flex-start;
+}
+
+.rail-item:active { background: var(--s2); }
+.rail-item.on { background: var(--acc-soft); }
+
+.rail-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  margin-top: 5px; flex: none;
+  background: var(--t3);
+}
+.rail-dot.running { background: var(--acc); box-shadow: 0 0 6px var(--acc-glow); }
+.rail-dot.waiting-approval, .rail-dot.waiting-input { background: var(--warn); }
+.rail-dot.error { background: var(--danger); }
+
+.rail-body { min-width: 0; }
+.rail-name { display: block; font-size: 12.5px; color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-meta { font-size: 10px; }
+
+.segs {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+  max-width: var(--content-max, none);
+  margin: 0 auto;
+  padding: 8px var(--gutter, 12px) 6px;
+  box-sizing: border-box;
+}
+
+.seg {
+  flex: 1;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 8px;
+  color: var(--t3);
+  font-size: 12.5px;
+  transition: color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
+}
+
+/* 选中用底色 + 主色文字：纯文字变色在嘈杂背景上不够明确 */
+.seg.on {
+  color: var(--acc);
+  background: var(--acc-soft);
+  font-weight: 600;
+}
+
+.seg-n {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--acc);
+  color: var(--acc-ink);
+}
+
+.empty-block { padding: 40px 8px; text-align: center; }
+.empty-t { display: block; font-size: 14px; color: var(--t1); }
+.empty-d { display: block; margin-top: 8px; font-size: 11.5px; line-height: 17px; }
+
+.trace-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--bd);
+}
+
+.trace-k {
+  flex: none;
+  min-width: 64px;
+  font-size: 11.5px;
+  color: var(--acc);
+}
+
+.trace-d {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-t { flex: none; font-size: 10px; color: var(--t3); }
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--bd);
+}
+
+.file-op {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 10px;
+  line-height: 20px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.file-op.add { background: var(--acc-soft); color: var(--acc); }
+.file-op.mod { background: var(--warn-soft); color: var(--warn); }
+.file-op.del { background: var(--danger-soft); color: var(--danger); }
+
+.file-p { flex: 1; min-width: 0; font-size: 12px; color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-n { flex: none; font-size: 11px; color: var(--t3); }
 
 .daystamp { text-align: center; font-size: 10px; color: var(--t3); margin: 14px 0; letter-spacing: 1px; }
 
@@ -725,7 +1221,100 @@ onUnmounted(() => {
   background: currentColor;
 }
 
-.send.stop { color: var(--danger); border-color: var(--danger-bd); background: var(--danger-soft); }
+
+
+.queue-dock {
+  width: 100%;
+  max-width: var(--content-max, none);
+  margin: 0 auto;
+  padding: 8px var(--gutter, 12px);
+  box-sizing: border-box;
+  border-top: 1px solid var(--bd);
+  background: var(--s1);
+}
+
+.queue-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.queue-title { font-size: 12px; color: var(--acc); font-weight: 600; }
+.queue-hint { font-size: 10.5px; }
+
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--bd);
+}
+
+.queue-row.stepping { opacity: 0.85; }
+
+.queue-tag {
+  flex: none;
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--acc-soft);
+  color: var(--acc);
+}
+
+.queue-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-acts { flex: none; display: flex; gap: 10px; }
+.qact { font-size: 11.5px; color: var(--acc); }
+.qact.danger { color: var(--danger); }
+
+.changes-note {
+  padding: 8px 0 4px;
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.diff-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-end;
+}
+
+.diff-panel {
+  width: 100%;
+  max-height: 72%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
+  border-top: 1px solid var(--bd);
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.diff-path { flex: 1; min-width: 0; font-size: 12px; color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-close { flex: none; font-size: 12.5px; color: var(--acc); }
+
+.diff-body { flex: 1; padding: 8px 12px 16px; }
+
+.diff-line { display: flex; gap: 8px; padding: 1px 0; }
+.diff-sig { flex: none; width: 10px; font-size: 11px; color: var(--t3); }
+.diff-txt { flex: 1; min-width: 0; font-size: 11.5px; color: var(--t2); white-space: pre-wrap; word-break: break-all; }
+.diff-line.add .diff-sig, .diff-line.add .diff-txt { color: var(--acc); }
+.diff-line.del .diff-sig, .diff-line.del .diff-txt { color: var(--danger); }
 
 .composer {
   width: 100%;
@@ -780,5 +1369,18 @@ onUnmounted(() => {
 }
 
 .send.on { background: var(--acc); color: var(--acc-ink); }
-.send svg { width: 17px; height: 17px; }
+
+/*
+ * 停止按钮：必须是红的。
+ * 之前写成 `.send.stop.on`，但 `.on` 在后面且同权重，绿色把它盖住了——
+ * 结果"停止"看起来和"发送"一模一样，用户根本认不出这是中断操作。
+ * 这里提高权重并放到最后，确保红底压过绿色。
+ */
+.send.stop,
+.send.stop.on {
+  background: var(--danger);
+  color: #1a0806;
+  border-color: var(--danger);
+  box-shadow: 0 0 10px rgba(255, 92, 77, 0.35);
+}
 </style>

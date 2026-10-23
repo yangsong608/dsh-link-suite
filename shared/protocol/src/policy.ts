@@ -89,8 +89,7 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   'session.queue.push': P('operator', 'unlocked'),
   'session.queue.edit': P('operator', 'unlocked'),
   'session.queue.remove': P('operator', 'unlocked'),
-  'session.queue.reorder': P('operator', 'unlocked'),
-  'session.queue.clear': P('operator', 'unlocked'),
+  'session.queue.steer': P('operator', 'unlocked'),
 
   // ── 会话管理 ────────────────────────────────────────────────────────
   // 改名/归档都改动了会话的持久状态，等同写操作 → 需要解锁。

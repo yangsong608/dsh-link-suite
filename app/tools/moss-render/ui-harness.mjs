@@ -56,6 +56,40 @@ const SESSIONS = [
   { id: 's6', workspaceId: 'ws_b', title: '导出销售日报', status: 'idle', updatedAt: now - 172_800_000 },
 ]
 
+/** 队列（dsh 的 agent inbox）：两条待发，一条插话。 */
+const QUEUE = {
+  nextTurn: [
+    { itemId: 'q1', text: '顺便把重试次数加到 5' },
+    { itemId: 'q2', text: '跑完给我看下 dist 体积' },
+  ],
+  nextStep: [{ itemId: 'q3', text: '先别动 package.json' }],
+}
+
+/** 产物：本轮改动的文件（近似，来自文件工具记录）。 */
+const CHANGES = {
+  files: [
+    { path: 'app/src/core/upload.ts', op: 'mod', additions: 42, deletions: 8 },
+    { path: 'app/src/core/upload.spec.ts', op: 'add', additions: 61, deletions: 0 },
+    { path: 'docs/05-上传通道.md', op: 'del', additions: 0, deletions: 23 },
+  ],
+  approximate: true,
+  note: '来自会话事件里的文件工具记录；不含 shell 改动、二进制与 git 操作',
+}
+
+const HUNKS = {
+  path: 'app/src/core/upload.ts',
+  hunks: [
+    { t: ' ', s: 'export async function upload(file: File) {' },
+    { t: '-', s: '  const body = await file.arrayBuffer()' },
+    { t: '-', s: '  return transport.send(body)' },
+    { t: '+', s: '  const CHUNK = 8 * 1024 * 1024' },
+    { t: '+', s: '  for (let offset = 0; offset < file.size; offset += CHUNK) {' },
+    { t: '+', s: '    await transport.sendChunk(file.slice(offset, offset + CHUNK), offset)' },
+    { t: '+', s: '  }' },
+    { t: ' ', s: '}' },
+  ],
+}
+
 const MODELS = {
   default: { provider: 'deepseek-account', model: 'deepseek-flash' },
   groups: [
@@ -235,6 +269,13 @@ function toStream(ev, seq, isHistory) {
           }, 60 + history.length * 40 + 30)
           return
         }
+        case 'session.queue.list': return reply(window.__MOCK__.queue)
+        case 'session.queue.push': return reply({ ok: true })
+        case 'session.queue.edit': return reply({ ok: true })
+        case 'session.queue.remove': return reply({ ok: true })
+        case 'session.queue.steer': return reply({ ok: true })
+        case 'session.changes': return reply(window.__MOCK__.changes)
+        case 'session.diff': return reply(window.__MOCK__.hunks)
         case 'session.prompt':
           return reply({ ok: true, sessionId: frame.p?.sessionId })
         case 'session.cancel':
@@ -283,7 +324,10 @@ const VIEWPORTS = {
 }
 
 async function main() {
-  const only = process.argv[2]
+  // --light 时额外出一轮浅色主题截图（用于验证日间模式）
+  const args = process.argv.slice(2).filter((a) => a !== '--light')
+  const light = process.argv.includes('--light')
+  const only = args[0]
   await mkdir(OUT, { recursive: true })
 
   const browser = await puppeteer.launch({
@@ -304,12 +348,15 @@ async function main() {
     await page.evaluateOnNewDocument(installMockSocket)
     await page.evaluateOnNewDocument((mock) => { window.__MOCK__ = mock }, {
       devices: DEVICES, workspaces: WORKSPACES, sessions: SESSIONS, models: MODELS, history: HISTORY,
+      queue: QUEUE, changes: CHANGES, hunks: HUNKS,
     })
     // 设备表落盘，让首页直接进入"已配对"状态
-    await page.evaluateOnNewDocument((seed) => {
+    await page.evaluateOnNewDocument((seed, isLight) => {
       try {
         localStorage.setItem('dsh-link/devices', seed)
         localStorage.setItem('dsh-link/token/dev_a', 'mock-token')
+        // 浅色模式：用户亲手改过（lightStored 由读缓存置位），跳过跟随系统
+        if (isLight) localStorage.setItem('dsh-link/prefs', JSON.stringify({ skinMode: 'moss', light: true, lite: false }))
       } catch { /* 忽略 */ }
     }, JSON.stringify({
       activeId: 'dev_a',
@@ -318,7 +365,7 @@ async function main() {
         createdAt: now - 86_400_000 * 3, lastSeen: now - 40_000,
         endpoint: { url: 'ws://mock:7443/dshlink', kind: 'lan' },
       }],
-    }))
+    }), light)
 
     await page.setViewport(vp)
 
@@ -327,7 +374,8 @@ async function main() {
       // 启动动画 4.3s；等它播完再截
       // devices 页有 4.3s 启动动画；其余页面要等连接建立 + 首轮 refresh
       await new Promise((r) => setTimeout(r, name === 'devices' ? 5200 : 4200))
-      const file = `${OUT}/${name}-${vp.width}x${vp.height}.png`
+      const suffix = light ? '-light' : ''
+      const file = `${OUT}/${name}-${vp.width}x${vp.height}${suffix}.png`
       await page.screenshot({ path: file })
       const calls = await page.evaluate(() => (window.__mockCalls ?? []).filter(c => !String(c).startsWith('emit:message')))
       console.log('✓', vpName, name, '→', file, '| mock 收到:', JSON.stringify(calls.slice(-6)))

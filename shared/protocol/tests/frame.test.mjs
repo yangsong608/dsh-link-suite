@@ -179,7 +179,8 @@ test('锁死时队列与文件浏览全拒（只剩 4 个豁免方法）', () =>
 
 test('队列写操作与 session.prompt 同层级（不能出现"能排队但不能发言"）', () => {
   assert.equal(METHOD_POLICY['session.prompt'].tier, 'unlocked')
-  for (const m of ['session.queue.push', 'session.queue.edit', 'session.queue.remove', 'session.queue.reorder', 'session.queue.clear']) {
+  // dsh 的队列没有 reorder / clear，这里只校验真实存在的方法
+  for (const m of ['session.queue.push', 'session.queue.edit', 'session.queue.remove', 'session.queue.steer']) {
     assert.equal(METHOD_POLICY[m].tier, 'unlocked', `${m} 的 tier 应与 session.prompt 一致`)
     assert.equal(METHOD_POLICY[m].role, 'operator', `${m} 的 role 应与 session.prompt 一致`)
   }
