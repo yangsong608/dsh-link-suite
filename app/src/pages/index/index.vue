@@ -319,14 +319,16 @@ function deviceMenu(d: DeviceCard): void {
     items: [
       { label: '重命名', hint: '改的是本机显示名，不影响电脑' },
       { label: '查看详情', hint: '设备 ID / 地址 / 状态' },
+      { label: '修改地址', hint: '电脑换了 IP 或端口时用这个' },
       { label: '断开连接', hint: '只是断线，配对关系保留' },
       { label: '移除设备', hint: '需要重新配对才能再连', danger: true },
     ],
     onSelect: (i) => {
       if (i === 0) void renameDevice(d)
       else if (i === 1) void showDeviceDetail(d)
-      else if (i === 2) disconnectManualDevice(d)
-      else if (i === 3) void removeDevice(d)
+      else if (i === 2) void editEndpoint(d)
+      else if (i === 3) disconnectManualDevice(d)
+      else if (i === 4) void removeDevice(d)
     },
   })
 }
@@ -380,6 +382,40 @@ function statusText(s: ReturnType<typeof statusOf>): string {
     case 'locked': return '已锁定'
     default: return '未知'
   }
+}
+
+/**
+ * 修改连接地址。
+ *
+ * 为什么需要：电脑换了网络/换了端口后，App 里存的还是旧地址，表现是
+ * "连接主机超时，请检查地址与网络"——而用户根本不知道要改哪里。
+ * 这个入口就是把唯一需要改的那一个字段露出来。
+ */
+function editEndpoint(d: DeviceCard): void {
+  const current = d.endpoint?.url ?? ''
+  openSheet({
+    kind: 'prompt',
+    title: '修改连接地址',
+    message: '在电脑的 MOSS Link 设置里能看到当前地址。格式 ws://IP:端口/dshlink。',
+    value: current,
+    placeholder: 'ws://192.168.1.10:7443/dshlink',
+    confirmText: '保存并重连',
+    onConfirm: (text) => {
+      const url = text.trim()
+      if (!/^wss?:\/\/[^\s]+$/.test(url)) {
+        uni.showToast({ title: '需以 ws:// 或 wss:// 开头', icon: 'none' })
+        return
+      }
+      const idx = state.devices.findIndex((x) => x.deviceId === d.deviceId)
+      if (idx >= 0) {
+        const cur = state.devices[idx]
+        if (cur !== undefined) state.devices[idx] = { ...cur, endpoint: { url, kind: 'lan' }, conn: 'connecting' }
+      }
+      haptic('medium')
+      const next = state.devices[idx]
+      if (next !== undefined) connectDevice(next)
+    },
+  })
 }
 
 function disconnectManualDevice(d: DeviceCard): void {
