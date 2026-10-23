@@ -108,6 +108,35 @@ export interface HostSessionEvent {
 const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined)
 
 /**
+ * 从 content 块里拼出纯文字。
+ *
+ * 只取 type==='text' 的块：tool-call / image / file 各有自己的投影，
+ * 硬塞进正文只会让回答变得难读。多块之间用空行分段。
+ */
+function collectText(blocks: readonly unknown[]): string {
+  const parts: string[] = []
+  for (const raw of blocks) {
+    const block = raw as { type?: unknown; text?: unknown }
+    if (block?.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
+      parts.push(block.text)
+    }
+  }
+  return parts.join('\n\n')
+}
+
+/** 取 reasoning 块，用于折叠展示"它在想什么"。 */
+function collectReasoning(blocks: readonly unknown[]): string {
+  const parts: string[] = []
+  for (const raw of blocks) {
+    const block = raw as { type?: unknown; text?: unknown }
+    if (block?.type === 'reasoning' && typeof block.text === 'string' && block.text.length > 0) {
+      parts.push(block.text)
+    }
+  }
+  return parts.join('\n')
+}
+
+/**
  * 从工具参数里抽出"这一行该显示什么"。
  *
  * 目标：让 `▸ Bash  npm test` 这种一行能看懂，而不是 `▸ tool`。
@@ -174,18 +203,36 @@ export function toTraceItem(event: HostSessionEvent, redacted = false): TraceIte
   const data = event.data ?? {}
 
   switch (event.type) {
+    /*
+     * assistant/message 的真实结构是
+     *   { turn, step, message: AssistantMessage, stream, usage }
+     * 文字在 message.content[] 的 text 块里，**不在 data.text**。
+     * 之前读 data.text 永远是 undefined，于是 agent 的回答全被丢弃——
+     * 这就是"会话里只有 bash，没有文字回答"的原因。
+     *
+     * reasoning 块单独投影成 think，不混进正文。
+     */
     case 'assistant/message': {
-      const text = asString(data['text'])
-      if (text === undefined) return undefined
+      const message = data['message'] as { content?: unknown } | undefined
+      const blocks = Array.isArray(message?.content) ? message.content : []
+      const text = collectText(blocks)
+      if (text.length === 0) {
+        const think = collectReasoning(blocks)
+        if (think.length > 0) return { ...base, k: 'think', summary: redacted ? '' : think.slice(0, 400) }
+        return undefined
+      }
       return { ...base, k: 'text', text: redacted ? '' : text.slice(0, 4000) }
     }
 
     // 用户自己说的话必须出现在历史里。
     // 之前的映射表漏了 user/message，导致回放历史时"我说过的话"全被丢弃，
     // 只剩 agent 的回复——看起来像会话不完整。
+    // user/message 的 data 本身就是 UserMessage：{ id, role, content[], source }
+    // 同样要读 content[]，读 data.text 会拿到 undefined。
     case 'user/message': {
-      const text = asString(data['text'])
-      if (text === undefined) return undefined
+      const blocks = Array.isArray(data['content']) ? data['content'] : []
+      const text = collectText(blocks)
+      if (text.length === 0) return undefined
       return { ...base, k: 'user', text: redacted ? '' : text.slice(0, 4000) }
     }
 

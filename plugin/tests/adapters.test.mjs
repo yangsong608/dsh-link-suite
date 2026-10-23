@@ -69,8 +69,11 @@ test('列表按 updatedAt 倒序，并过滤掉没有 id 的脏数据', () => {
 
 // ── 事件 → TraceItem ──────────────────────────────────────────────────────
 
-test('assistant/message → text', () => {
-  const item = toTraceItem({ type: 'assistant/message', seq: 3, at: 10, data: { text: '你好' } })
+test('assistant/message → text（读 message.content[]）', () => {
+  const item = toTraceItem({
+    type: 'assistant/message', seq: 3, at: 10,
+    data: { message: { content: [{ type: 'text', text: '你好' }] } },
+  })
   assert.equal(item.k, 'text')
   assert.equal(item.text, '你好')
   assert.equal(item.seq, 3)
@@ -210,7 +213,7 @@ test('其它 note / think / file 不进聊天流（详情页才看）', () => {
 // ── 历史回放（对话页空白的根因）──────────────────────────────────────────
 
 test('user/message 必须映射（否则历史里"我说的话"会消失）', () => {
-  const item = toTraceItem({ type: 'user/message', seq: 1, at: 1, data: { text: '你好' } })
+  const item = toTraceItem({ type: 'user/message', seq: 1, at: 1, data: { content: [{ type: 'text', text: '你好' }] } })
   assert.equal(item.k, 'user')
   assert.equal(item.text, '你好')
 })

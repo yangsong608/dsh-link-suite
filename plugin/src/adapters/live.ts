@@ -156,7 +156,17 @@ export function createSubscriptionHub(deps: Deps): SubscriptionHub {
     open(sessionId, connId, deviceId) {
       const perSession = subs.get(sessionId) ?? new Set<Subscription>()
       for (const existing of perSession) {
-        if (existing.connId === connId) return false // 已经订阅，幂等
+        if (existing.connId === connId) {
+          /*
+           * 已经订阅 → 视为成功。
+           *
+           * 原来返回 false，而 router 把 false 当"会话不存在"抛错，
+           * 结果**第二次进入同一个会话时 follow 直接失败**，历史一条都拿不到
+           * （用户看到的就是"第一次有历史，退出再进就没了"）。
+           * 幂等语义应该是"你要的状态已经达成"，不是错误。
+           */
+          return true
+        }
       }
       const subscription: Subscription = {
         sessionId,

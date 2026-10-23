@@ -13,6 +13,7 @@ import { haptic } from '@/core/haptic'
 import { humanBytes, pickFile, pickImage } from '@/core/attach'
 import { currentLink, connectDevice, refreshAll, setSessionListener } from '@/core/link'
 import MossDot from '@/components/moss/MossDot.vue'
+import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
 
 type Item =
   | { k: 'user'; text: string; at: string }
@@ -32,6 +33,38 @@ type Item =
  */
 /** 宽屏（平板横屏/大屏）时启用三栏：会话列表 / 对话 / 产物。 */
 const wide = ref(false)
+/** 右栏是否展开。宽屏下也要能收起——产物面板占 300px，看长代码时很碍事。 */
+const rightOpen = ref(true)
+
+/**
+ * 左栏按工作区分组。
+ *
+ * 之前是平铺列表，和会话页的分组逻辑不一致——同一个应用里两处对同一个
+ * 概念用两种组织方式，用户会以为左边那个是"最近"、右边那个是"全部"。
+ * 归属来源仍是 workspace.sessionIds（dsh 的权威归属）。
+ */
+interface RailGroup {
+  id: string
+  name: string
+  items: SessionRow[]
+}
+const railGroups = computed<RailGroup[]>(() => {
+  const byId = new Map(state.sessions.map((x) => [x.id, x]))
+  const claimed = new Set<string>()
+  const out: RailGroup[] = []
+  for (const ws of state.workspaces) {
+    const items = (ws.sessionIds ?? [])
+      .map((id) => byId.get(id))
+      .filter((x): x is SessionRow => x !== undefined)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+    for (const it of items) claimed.add(it.id)
+    if (items.length === 0) continue
+    out.push({ id: ws.id, name: ws.name || ws.path, items })
+  }
+  const orphans = state.sessions.filter((x) => !claimed.has(x.id))
+  if (orphans.length > 0) out.push({ id: '__orphans__', name: '未归类', items: orphans })
+  return out
+})
 
 function updateWide(): void {
   const before = wide.value
@@ -77,6 +110,40 @@ const fileItems = ref<{ path: string; op: string; additions?: number; deletions?
 /** 产物是近似的：只有文件工具的记录，没有 shell/git。必须告诉用户。 */
 const changesNote = ref('')
 const diffView = ref<{ path: string; hunks: { t: string; s: string }[] } | undefined>(undefined)
+
+/**
+ * 统一弹层控制器。
+ *
+ * 全应用不再用 uni.showActionSheet / showModal：
+ *   - 原生样式与 MOSS 视觉不搭
+ *   - showActionSheet 在部分平台最多 6 项，超出**静默丢弃**
+ *     （模型列表十几项，点"选模型"没反应就是这个）
+ */
+interface SheetState {
+  visible: boolean
+  kind: 'menu' | 'confirm' | 'prompt'
+  title?: string
+  items?: SheetItem[]
+  message?: string
+  value?: string
+  placeholder?: string
+  confirmText?: string
+  onSelect?: (index: number) => void
+  onConfirm?: (text: string) => void
+}
+const sheet = ref<SheetState>({ visible: false, kind: 'menu' })
+
+function openSheet(opts: Omit<SheetState, 'visible'>): void {
+  sheet.value = { visible: true, ...opts }
+}
+
+function onSheetSelect(index: number): void {
+  sheet.value.onSelect?.(index)
+}
+
+function onSheetConfirm(text: string): void {
+  sheet.value.onConfirm?.(text)
+}
 
 /** 待发附件。图片内联；文件先上传换成 receiptId。 */
 interface PendingAttach {
@@ -149,12 +216,18 @@ function back(): void {
  */
 function chatMenu(): void {
   haptic('light')
-  uni.showActionSheet({
-    itemList: ['重命名会话', '归档会话', '查看会话信息'],
-    success: (res) => {
-      if (res.tapIndex === 0) void renameCurrent()
-      else if (res.tapIndex === 1) void archiveCurrent()
-      else if (res.tapIndex === 2) showInfo()
+  openSheet({
+    kind: 'menu',
+    title: '会话操作',
+    items: [
+      { label: '重命名会话', hint: '改的是标题，不影响内容' },
+      { label: '归档会话', hint: '移出列表，日志仍保留在电脑上' },
+      { label: '查看会话信息', hint: '会话 ID / 状态 / 已加载条数' },
+    ],
+    onSelect: (i) => {
+      if (i === 0) void renameCurrent()
+      else if (i === 1) void archiveCurrent()
+      else if (i === 2) showInfo()
     },
   })
 }
@@ -344,11 +417,16 @@ async function queueEdit(item: { itemId: string; text: string }): Promise<void> 
  */
 function pickAttach(): void {
   haptic('light')
-  uni.showActionSheet({
-    itemList: ['拍照 / 选图片', '选择文件'],
-    success: (res) => {
-      if (res.tapIndex === 0) void addImage()
-      else if (res.tapIndex === 1) void addFile()
+  openSheet({
+    kind: 'menu',
+    title: '添加附件',
+    items: [
+      { label: '拍照 / 选图片', hint: '图片直接内联发送，不走上传' },
+      { label: '选择文件', hint: '先上传换成凭证，再随消息发出' },
+    ],
+    onSelect: (i) => {
+      if (i === 0) void addImage()
+      else if (i === 1) void addFile()
     },
   })
 }
@@ -424,29 +502,29 @@ function pickModel(): void {
   haptic('light')
   const link = currentLink()
   if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
-  void loadCatalog()
-  void loadQueue()
-  // 宽屏右栏是常驻的，所以进页面就要有产物数据（窄屏等切到 tab 再拉）
-  if (wide.value) void loadChanges().then(() => {
-    /**
-     * 摊平模型列表。分组用「提供商 · 模型名」避免同名模型混淆
-     * （实测目录里多个 provider 都有 fine-tune 版本）。
-     */
-    const flat: { label: string; provider: string; model: string }[] = []
+  void loadCatalog().then(() => {
+    const flat: { label: string; hint: string; provider: string; model: string }[] = []
     for (const g of models.value) {
       for (const m of g.models) {
-        const prefix = g.name.length > 0 ? `${g.name} · ` : ''
-        flat.push({ label: `${prefix}${m.name}`, provider: g.provider, model: m.id })
+        flat.push({
+          label: m.name,
+          hint: g.name.length > 0 ? g.name : g.provider,
+          provider: g.provider,
+          model: m.id,
+        })
       }
     }
     if (flat.length === 0) {
       uni.showToast({ title: '宿主没有可用模型', icon: 'none' })
       return
     }
-    uni.showActionSheet({
-      itemList: flat.slice(0, 20).map((x) => x.label),
-      success: (res) => {
-        const pick = flat[res.tapIndex]
+    openSheet({
+      kind: 'menu',
+      title: '选择模型',
+      // 不再 slice(0,20)：自定义弹层能滚动，模型多也不会被截掉
+      items: flat.map((x) => ({ label: x.label, hint: x.hint })),
+      onSelect: (i) => {
+        const pick = flat[i]
         if (pick === undefined) return
         void link.call('session.selectModel', {
           sessionId: sessionId.value,
@@ -493,6 +571,18 @@ function opLabel(op: string): string {
  * 宽屏下不该为了换会话退回列表页——那会把整页状态丢掉。
  * 这里只做"平铺 + 工作区名"的最小实现，不重复列表页的分组交互。
  */
+/** 左栏状态文案：给中文，别把协议里的英文枚举直接怼给用户。 */
+function statusText(status: string): string {
+  switch (status) {
+    case 'running': return '进行中'
+    case 'waiting-approval': return '待批准'
+    case 'waiting-input': return '待回复'
+    case 'done': return '已完成'
+    case 'error': return '出错'
+    default: return '空闲'
+  }
+}
+
 function switchSession(row: SessionRow): void {
   if (row.id === sessionId.value) return
   haptic('light')
@@ -787,19 +877,22 @@ onUnmounted(() => {
         <text class="mono t3">{{ state.sessions.length }}</text>
       </view>
       <scroll-view class="rail-scroll" scroll-y>
-        <view
-          v-for="r in state.sessions"
-          :key="r.id"
-          class="rail-item"
-          :class="{ on: r.id === sessionId }"
-          @tap="switchSession(r)"
-        >
-          <view class="rail-dot" :class="r.status" />
-          <view class="rail-body">
-            <text class="rail-name">{{ r.title }}</text>
-            <text class="rail-meta t3">{{ r.status }}</text>
+        <template v-for="g in railGroups" :key="g.id">
+          <view class="rail-group">{{ g.name }}</view>
+          <view
+            v-for="r in g.items"
+            :key="r.id"
+            class="rail-item"
+            :class="{ on: r.id === sessionId }"
+            @tap="switchSession(r)"
+          >
+            <view class="rail-dot" :class="r.status" />
+            <view class="rail-body">
+              <text class="rail-name">{{ r.title }}</text>
+              <text class="rail-meta t3">{{ statusText(r.status) }}</text>
+            </view>
           </view>
-        </view>
+        </template>
       </scroll-view>
     </view>
 
@@ -998,13 +1091,19 @@ onUnmounted(() => {
     </view>
     </view>
 
-    <!-- 宽屏右栏：产物常驻，不用切 tab -->
-    <view v-if="wide" class="rail-right">
+    <!-- 宽屏右栏：产物常驻，可收起 -->
+    <view v-if="wide" class="rail-right" :class="{ closed: !rightOpen }">
       <view class="rail-head">
-        <text class="rail-title">产物</text>
-        <text class="mono t3">{{ fileItems.length }}</text>
+        <view class="rail-head-l">
+          <text class="rail-title">产物</text>
+          <text class="mono t3">{{ fileItems.length }}</text>
+        </view>
+        <view class="rail-toggle" @tap="rightOpen = !rightOpen">
+          <view class="chev-r" :class="{ open: rightOpen }" />
+        </view>
       </view>
-      <scroll-view class="rail-scroll" scroll-y>
+      <view v-if="!rightOpen" class="rail-collapsed" @tap="rightOpen = true">产物</view>
+      <scroll-view v-if="rightOpen" class="rail-scroll" scroll-y>
         <view v-if="fileItems.length === 0" class="rail-empty t3">这一轮还没有产物</view>
         <view v-for="(f, i) in fileItems" :key="i" class="file-row" @tap="openDiff(f)">
           <view class="file-op" :class="f.op">{{ opLabel(f.op) }}</view>
@@ -1012,6 +1111,21 @@ onUnmounted(() => {
         </view>
       </scroll-view>
     </view>
+
+    <!-- 统一弹层：菜单 / 确认 / 输入 -->
+    <MossSheet
+      :visible="sheet.visible"
+      :kind="sheet.kind"
+      :title="sheet.title"
+      :items="sheet.items ?? []"
+      :message="sheet.message ?? ''"
+      :value="sheet.value ?? ''"
+      :placeholder="sheet.placeholder ?? ''"
+      :confirm-text="sheet.confirmText ?? '确定'"
+      @update:visible="sheet.visible = $event"
+      @select="onSheetSelect"
+      @confirm="onSheetConfirm"
+    />
 
     <!-- 差异弹层：手机上一页只放一个文件，底部抽屉式 -->
     <view v-if="diffView !== undefined" class="diff-mask" @tap="diffView = undefined">
@@ -1126,7 +1240,52 @@ onUnmounted(() => {
 }
 
 .rail-left { width: 240px; border-right: 1px solid var(--bd); }
-.rail-right { width: 300px; border-left: 1px solid var(--bd); }
+.rail-right { width: 300px; border-left: 1px solid var(--bd); transition: width var(--t-mid) var(--ease-out); }
+
+/* 收起后只留一条窄带：看长代码时不该被 300px 面板挡着 */
+.rail-right.closed { width: 40px; }
+
+.rail-head-l { display: flex; align-items: baseline; gap: 6px; }
+
+.rail-toggle {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  flex: none;
+}
+
+.rail-toggle:active { background: var(--s2); }
+
+/* 折叠箭头：CSS 画的 < > */
+.chev-r {
+  width: 7px;
+  height: 7px;
+  border-right: 1.7px solid var(--t2);
+  border-bottom: 1.7px solid var(--t2);
+  transform: rotate(-45deg);
+  margin-left: 2px;
+  transition: transform var(--t-fast) var(--ease-out);
+}
+.chev-r.open { transform: rotate(135deg); margin-left: -2px; }
+
+.rail-collapsed {
+  writing-mode: vertical-rl;
+  padding: 10px 0;
+  font-size: 11.5px;
+  color: var(--t3);
+  letter-spacing: 3px;
+  text-align: center;
+}
+
+.rail-group {
+  padding: 10px 8px 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
+  color: var(--t3);
+  text-transform: none;
+}
 
 .rail-head {
   display: flex;
