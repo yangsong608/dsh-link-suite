@@ -134,6 +134,88 @@ export function markUserPreference(field: 'light' | 'lite' | 'skin'): void {
   }
 })()
 
+/**
+ * 设备表持久化。
+ *
+ * 这是一个**真实踩到的可用性缺陷**：设备表以前完全不落盘，
+ * 而令牌是按 deviceId 存的（`dsh-link/token/<deviceId>`）。
+ * 结果就是——配对成功、关掉 App、再打开，设备列表空了，
+ * 令牌还在存储里但没有任何 deviceId 能指向它，等于必须重新配对。
+ *
+ * 只持久化"重建连接所需的最小信息"：
+ *   deviceId / name / platform / role / createdAt / lastSeen / endpoint
+ * 不存 conn、latencyMs、lock 这些瞬时字段——它们每次启动都会重新测量，
+ * 存下来只会让界面在启动瞬间显示过期状态。
+ */
+const DEVICES_KEY = 'dsh-link/devices'
+
+interface PersistedDevice {
+  deviceId: string
+  name: string
+  platform: string
+  role: string
+  createdAt: number
+  lastSeen: number
+  endpoint?: { url: string; kind: 'lan' | 'relay' | 'tailscale' | 'custom' }
+}
+
+;(function loadDevices() {
+  try {
+    const raw = uni.getStorageSync(DEVICES_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(String(raw)) as { devices?: PersistedDevice[]; activeId?: string }
+    const list = parsed.devices
+    if (!Array.isArray(list)) return
+    state.devices = list
+      .filter((d) => typeof d?.deviceId === 'string' && d.deviceId.length > 0)
+      .map((d) => ({
+        deviceId: d.deviceId,
+        name: d.name || '未命名设备',
+        platform: (d.platform || 'desktop') as DeviceInfo['platform'],
+        role: (d.role || 'operator') as DeviceInfo['role'],
+        createdAt: d.createdAt || Date.now(),
+        lastSeen: d.lastSeen || Date.now(),
+        // 启动时一律标 connecting：真实状态要连上才知道，不能沿用上次的"在线"
+        conn: 'connecting' as const,
+        ...(d.endpoint === undefined ? {} : { endpoint: d.endpoint }),
+      }))
+    if (typeof parsed.activeId === 'string' && parsed.activeId.length > 0) {
+      state.activeId = parsed.activeId
+    }
+  } catch {
+    // 缓存坏了就当没有：重新配对总比启动崩溃好
+  }
+})()
+
+/** 设备表落盘。设备或当前选中项变化时自动调用。 */
+function saveDevices(): void {
+  try {
+    uni.setStorageSync(
+      DEVICES_KEY,
+      JSON.stringify({
+        activeId: state.activeId,
+        devices: state.devices.map((d) => ({
+          deviceId: d.deviceId,
+          name: d.name,
+          platform: d.platform,
+          role: d.role,
+          createdAt: d.createdAt,
+          lastSeen: d.lastSeen,
+          ...(d.endpoint === undefined ? {} : { endpoint: d.endpoint }),
+        })),
+      }),
+    )
+  } catch {
+    // 存不下不影响当前会话，只是下次启动要重配
+  }
+}
+
+watch(
+  () => [state.devices, state.activeId] as const,
+  () => { saveDevices() },
+  { deep: true },
+)
+
 /** 落盘。watch 与显式调用共用同一份，避免两处写法不一致。 */
 function savePrefs(): void {
   try {

@@ -36,6 +36,10 @@ const boxStyle = computed(() => ({
 
 <template>
   <view class="moss-badge" :class="{ working: props.working, 'no-glow': !props.glow }" :style="boxStyle">
+    <!-- 底座：机器人本身是白色金属质感，小尺寸下直接放深色背景
+         会变成"一团白"。给一层深色芯片底座 + 细描边，小图才立得住，
+         也顺便让角标看起来像仪表盘上的一个状态灯。 -->
+    <view class="plate" />
     <image class="img" :src="src" mode="aspectFit" />
   </view>
 </template>
@@ -48,10 +52,28 @@ const boxStyle = computed(() => ({
   flex: none;
 }
 
+.plate {
+  position: absolute;
+  inset: 4%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 30%, var(--s3) 0%, var(--s1) 62%, var(--bg) 100%);
+  border: 1px solid var(--bd);
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.06);
+}
+
 .img {
-  width: 100%;
-  height: 100%;
+  position: relative;
+  width: 92%;
+  height: 92%;
   transition: opacity 120ms ease;
+}
+
+/* 工作时底座描边跟着变色：光晕之外再加一层静态提示，
+   低端机（no-glow）关掉动画后仍能看出"在跑" */
+.moss-badge.working .plate {
+  border-color: rgba(255, 92, 77, 0.5);
+  box-shadow: inset 0 0 8px rgba(255, 92, 77, 0.25);
 }
 
 /**
