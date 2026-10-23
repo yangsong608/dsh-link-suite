@@ -90,6 +90,12 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   'session.queue.reorder': P('operator', 'unlocked'),
   'session.queue.clear': P('operator', 'unlocked'),
 
+  // ── 会话管理 ────────────────────────────────────────────────────────
+  // 改名/归档都改动了会话的持久状态，等同写操作 → 需要解锁。
+  'session.rename': P('operator', 'unlocked'),
+  'session.archive': P('operator', 'unlocked'),
+  'session.unarchive': P('operator', 'unlocked'),
+
   // ── 会话产物 ────────────────────────────────────────────────────────
   'session.changes': P('viewer'),
   'session.diff': P('viewer', 'unlocked'),

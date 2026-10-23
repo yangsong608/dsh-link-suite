@@ -249,6 +249,19 @@ export class DeviceRegistry {
     return record.deviceId
   }
 
+  /** 重命名设备。返回 false 表示设备不存在或已撤销。 */
+  async rename(deviceId: string, label: string): Promise<boolean> {
+    const record = this.get(deviceId)
+    if (record === undefined) return false
+    // DeviceRecord 的 label 是 readonly，这里整体替换一条
+    const index = this.#devices.findIndex((d) => d.deviceId === deviceId)
+    if (index < 0) return false
+    const next: DeviceRecord = { ...record, label }
+    this.#devices[index] = next
+    await this.#save()
+    return true
+  }
+
   /** 测试与排障用：拿到撤销记录（含已撤销的）。 */
   all(): readonly DeviceRecord[] {
     return this.#devices

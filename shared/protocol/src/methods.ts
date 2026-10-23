@@ -80,6 +80,13 @@ export const METHODS = [
   'session.queue.clear',
 
   // 会话产物（这一轮动了哪些文件）
+  // 会话管理（改名 / 归档）。dsh 不提供物理删除会话，
+  // 只有 archive（从列表移除但保留日志），这是它的设计选择——
+  // 我们不发明一个"删除"去绕开它。
+  'session.rename',
+  'session.archive',
+  'session.unarchive',
+
   'session.changes',
   'session.diff',
 

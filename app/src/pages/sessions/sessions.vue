@@ -12,7 +12,7 @@ import MossDot from '@/components/moss/MossDot.vue'
 import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
-import { connectDevice, refreshAll } from '@/core/link'
+import { connectDevice, refreshAll, currentLink } from '@/core/link'
 
 const rows = computed(() => state.sessions)
 
@@ -74,6 +74,75 @@ function openChat(row: SessionRow): void {
   uni.navigateTo({ url: `/pages/chat/chat?id=${row.id}` })
 }
 
+/**
+ * 会话长按菜单：改名 / 归档。
+ *
+ * 为什么是长按而不是每行一个"..."按钮：
+ *   行内按钮会把可点区域挤到 30% 以下，而点开对话是最高频操作。
+ *   长按不占位置，也不会误触。
+ *
+ * 为什么没有"删除"：dsh 只能归档（移出列表、日志保留）。
+ * 给用户一个假的删除按钮，会让他以为数据被清掉了——那比没有更糟。
+ */
+function sessionMenu(row: SessionRow): void {
+  haptic('medium')
+  uni.showActionSheet({
+    itemList: ['重命名', '归档（移出列表，日志保留）'],
+    success: (res) => {
+      if (res.tapIndex === 0) void renameSession(row)
+      else if (res.tapIndex === 1) void archiveSession(row)
+    },
+  })
+}
+
+async function renameSession(row: SessionRow): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+  // showModal 的 editable 在部分平台不可用，用 showModal 拿输入后校验
+  uni.showModal({
+    title: '重命名会话',
+    editable: true,
+    placeholderText: row.title,
+    content: row.title,
+    success: async (res) => {
+      if (!res.confirm) return
+      const title = String(res.content ?? '').trim()
+      if (title.length === 0) return
+      try {
+        await link.call('session.rename', { sessionId: row.id, title })
+        row.title = title
+        uni.showToast({ title: '已重命名', icon: 'none' })
+      } catch (error) {
+        uni.showToast({ title: error instanceof Error ? error.message.slice(0, 16) : '失败', icon: 'none' })
+      }
+    },
+  })
+}
+
+async function archiveSession(row: SessionRow): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+  const running = row.status === 'running'
+  uni.showModal({
+    title: '归档会话',
+    content: running
+      ? '这个会话正在运行。归档会先停止它，日志仍保留。继续？'
+      : '归档后它不再出现在列表里，日志仍保留在电脑上。',
+    confirmText: '归档',
+    success: async (res) => {
+      if (!res.confirm) return
+      try {
+        // 正在运行的会话必须显式 force，否则宿主会拒绝（session-active）
+        await link.call('session.archive', { sessionId: row.id, force: running })
+        state.sessions = state.sessions.filter((s) => s.id !== row.id)
+        uni.showToast({ title: '已归档', icon: 'none' })
+      } catch (error) {
+        uni.showToast({ title: error instanceof Error ? error.message.slice(0, 16) : '失败', icon: 'none' })
+      }
+    },
+  })
+}
+
 onLoad(() => {
   // 进入会话页时确保已连接（首页可能还没连，或连接在切 tab 时丢了）
   const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
@@ -112,6 +181,7 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
             class="srow"
             :class="{ waiting: r.status === 'waiting-approval' || r.status === 'waiting-input' }"
             @tap="openChat(r)"
+            @longpress="sessionMenu(r)"
           >
             <view class="srow-l">
               <MossDot

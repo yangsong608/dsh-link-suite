@@ -568,6 +568,9 @@ window.__ModuleLoader__.load({
       '.__dl_note{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary);border-left:2px solid var(--dsw-alias-border-l3);padding-left:9px}',
       '.__dl_code{font-family:ui-monospace,Menlo,monospace;font-size:26px;letter-spacing:9px;font-weight:700;color:var(--dsw-alias-brand-primary);text-align:center;padding:12px 0 2px}',
       '.__dl_codeHint{font-size:11px;color:var(--dsw-alias-label-tertiary);text-align:center}',
+      '.__dl_pending{border:1px solid var(--dsw-alias-state-warning-primary, #e8c24a);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--dsw-alias-bg-layer-2)}',
+      '.__dl_pendingTitle{font-size:12px;font-weight:600;color:var(--dsw-alias-state-warning-primary, #e8c24a);margin-bottom:8px}',
+      '.__dl_pendingRow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0}',
       '.__dl_dev{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--dsw-alias-border-l1)}',
       '.__dl_dev:first-of-type{border-top:0}',
       '.__dl_devName{font-size:12.5px;color:var(--dsw-alias-label-primary)}',
@@ -617,8 +620,13 @@ window.__ModuleLoader__.load({
           getRelay: function () { return call('/config/relay') },
           setRelay: function (relayUrl) { return call('/config/relay', { relayUrl: relayUrl }) },
           startPair: function () { return call('/pair/start', {}) },
+          // 手机自己发起的配对会在宿主留下待确认记录，PC 必须能看到并批准，
+          // 否则手机端 pair.finish 永远 auth/forbidden —— 表现就是"配对超时"
+          pendingPairs: function () { return call('/pair/pending') },
+          approvePair: function (code) { return call('/pair/approve', { code }) },
           devices: function () { return call('/pair/devices') },
-          revoke: function (deviceId) { return call('/pair/revoke', { deviceId }) }
+          revoke: function (deviceId) { return call('/pair/revoke', { deviceId }) },
+          renameDevice: function (deviceId, label) { return call('/pair/rename', { deviceId, label }) }
         }
       }, [])
     }
@@ -692,6 +700,9 @@ window.__ModuleLoader__.load({
       // 公网接入（nps / frp）：地址与当前生效状态
       var relay = React.useState({ url: '', current: '', endpoints: [], msg: '', kind: '' })
       var relayState = relay[0], setRelay = relay[1]
+      // 手机发起的待确认配对请求
+      var pend = React.useState([])
+      var pending = pend[0], setPending = pend[1]
 
       var loadStatus = React.useCallback(function () {
         api.status().then(function (out) {
@@ -717,13 +728,27 @@ window.__ModuleLoader__.load({
         })
       }, [api])
 
+      var loadPending = React.useCallback(function () {
+        api.pendingPairs().then(function (out) {
+          if (out.status === 200) setPending(out.body.pending || [])
+        })
+      }, [api])
+
       React.useEffect(function () {
         loadStatus()
         loadDevices()
         loadRelay()
+        loadPending()
         // 只在挂载时读一次：设置面板的信息不需要实时刷新，
         // 每秒轮询会让它在后台一直发请求。
-      }, [loadStatus, loadDevices])
+      }, [loadStatus, loadDevices, loadRelay, loadPending])
+
+      // 待确认配对单独轮询：它有时效（2 分钟），且用户点开面板
+      // 往往正是因为"手机上正在配"。5 秒一次，面板关掉就停。
+      React.useEffect(function () {
+        var t = setInterval(loadPending, 5000)
+        return function () { clearInterval(t) }
+      }, [loadPending])
 
       React.useEffect(function () {
         if (pairState.left <= 0) return
@@ -782,6 +807,17 @@ window.__ModuleLoader__.load({
             })
           } else {
             setRelay(function (r) { return Object.assign({}, r, { msg: (out.body && out.body.error) || '保存失败', kind: 'err' }) })
+          }
+        })
+      }
+
+      function approvePending(code) {
+        api.approvePair(code).then(function (out) {
+          if (out.status === 200) {
+            setPending(function (list) { return list.filter(function (p) { return p.code !== code }) })
+            loadDevices()
+          } else {
+            loadPending()
           }
         })
       }
@@ -929,6 +965,29 @@ window.__ModuleLoader__.load({
         // ── 配对 ──
         e('div', { className: '__dl_group' },
           e('div', { className: '__dl_title' }, '配对新设备'),
+          // 手机点「扫码配对」时是**手机发起**的，宿主这边会留一条待确认记录。
+          // 不把这个列表画出来，用户永远等不到结果——pair.finish 会一直是
+          // auth/forbidden，表现就是"配对超时"。这是配对链路的关键一环。
+          pending.length > 0
+            ? e('div', { className: '__dl_pending' },
+                e('div', { className: '__dl_pendingTitle' },
+                  '有 ' + String(pending.length) + ' 台设备正在等待确认'),
+                pending.map(function (p) {
+                  return e('div', { key: p.code, className: '__dl_pendingRow' },
+                    e('div', { style: { minWidth: 0 } },
+                      e('div', { className: '__dl_devName' }, '配对码 ' + p.code),
+                      e('div', { className: '__dl_devMeta' },
+                        String(Math.max(0, Math.round((p.expiresAt - Date.now()) / 1000))) + ' 秒后失效')
+                    ),
+                    e('button', {
+                      type: 'button',
+                      className: '__dl_btn __dl_btnPri',
+                      onClick: function () { approvePending(p.code) }
+                    }, '允许')
+                  )
+                })
+              )
+            : null,
           e('div', { className: '__dl_hint' },
             '生成 6 位码，在手机 App 的「添加电脑」里输入。码 2 分钟内有效，只能用一次。'),
           pairState.code && pairState.left > 0
@@ -963,14 +1022,31 @@ window.__ModuleLoader__.load({
             ? e('div', { className: '__dl_hint' }, '还没有配对任何设备')
             : devState.list.map(function (d) {
                 return e('div', { key: d.deviceId, className: '__dl_dev' },
-                  e('div', null,
+                  e('div', { style: { minWidth: 0, flex: 1 } },
                     e('div', { className: '__dl_devName' }, d.label),
                     e('div', { className: '__dl_devMeta' }, (d.platform || '?') + ' · ' + d.role)
                   ),
-                  e('button', {
-                    type: 'button', className: '__dl_btn __dl_btnDanger',
-                    onClick: function () { revoke(d.deviceId) }
-                  }, '撤销')
+                  e('div', { className: '__dl_btns' },
+                    e('button', {
+                      type: 'button', className: '__dl_btn',
+                      onClick: function () {
+                        // 用浏览器 prompt 起名：设置面板里不值得为一次改命
+                        // 引入一个完整的表单状态机。改名是低频、单字段操作。
+                        var next = window.prompt('给这台设备起个名字', d.label)
+                        if (next === null) return
+                        var label = String(next).trim()
+                        if (label.length === 0) return
+                        api.renameDevice(d.deviceId, label).then(function (out) {
+                          if (out.status === 200) { loadDevices() }
+                          else setDev(function (s) { return Object.assign({}, s, { msg: (out.body && out.body.error) || '改名失败', kind: 'err' }) })
+                        })
+                      }
+                    }, '改名'),
+                    e('button', {
+                      type: 'button', className: '__dl_btn __dl_btnDanger',
+                      onClick: function () { revoke(d.deviceId) }
+                    }, '撤销')
+                  )
                 )
               }),
           e('div', { className: '__dl_note' },

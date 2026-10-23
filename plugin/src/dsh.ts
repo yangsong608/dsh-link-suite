@@ -62,6 +62,7 @@ export interface WebServerService {
  */
 export interface SessionController {
   list(request: { cursor?: string }, signal: AbortSignal): Promise<unknown>
+  rename(request: { sessionId: string; title: string }): Promise<unknown>
   prompt(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   cancel(request: { sessionId: string }): Promise<unknown>
   follow(request: Record<string, unknown>, signal: AbortSignal): AsyncIterable<unknown>
@@ -73,6 +74,12 @@ export interface HostWorkspace {
   readonly path: string
   readonly title: string
   readonly createdAt: string
+}
+
+/** 工作区控制器（会话归档属于它，不在 sessionController 上）。 */
+export interface WorkspaceController {
+  archiveSession(request: { sessionId: string; stopRunning?: boolean }): Promise<unknown>
+  unarchiveSession(request: { sessionId: string }): Promise<unknown>
 }
 
 export interface WorkspaceRegistry {

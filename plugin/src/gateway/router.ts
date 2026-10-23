@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto'
 import { encodePairUri, encodeQr, pairPayloadFromEndpoint } from '@dsh-link/protocol'
 
 import { RpcError, DEFAULT_CAPS, METHOD_POLICY, type DeviceRole, type Method } from '@dsh-link/protocol'
-import type { DshContext, SessionController, PluginManager, WorkspaceRegistry } from '../dsh.js'
+import type { DshContext, SessionController, PluginManager, WorkspaceRegistry, WorkspaceController } from '../dsh.js'
 import type { LinkConfig } from '../config.js'
 import type { LockService } from '../lock/index.js'
 import type { DeviceRegistry } from './devices.js'
@@ -329,6 +329,56 @@ export function createHandlers(): GatewayHandlers {
     'session.queue.remove': notImplemented('session.queue.remove'),
     'session.queue.reorder': notImplemented('session.queue.reorder'),
     'session.queue.clear': notImplemented('session.queue.clear'),
+
+    // ── 会话管理 ──────────────────────────────────────────────────────────
+    'session.rename': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+      const sessionId = str(p, 'sessionId')
+      const title = str(p, 'title').trim()
+      if (title.length === 0 || title.length > 120) {
+        throw new RpcError('rpc/bad-args', '标题需为 1-120 个字符')
+      }
+      try {
+        await sessions.rename({ sessionId, title })
+        return { ok: true, sessionId, title }
+      } catch (error) {
+        throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
+      }
+    },
+
+    // dsh 没有"删除会话"，只有 archive（移出列表但保留日志）。
+    // 我们不去发明一个删除——那会让用户以为记录没了，实际还在磁盘上。
+    'session.archive': async (rc, p) => {
+      const workspaces = rc.ctx.get<WorkspaceController>('workspaceController', false)
+      if (workspaces?.archiveSession === undefined) {
+        throw new RpcError('host/unavailable', '宿主没有工作区服务')
+      }
+      const sessionId = str(p, 'sessionId')
+      // 正在跑的会话默认拒绝归档（dsh 的 workspace/session-active）；
+      // 客户端明确要"连运行中一起停"时传 force。
+      const force = p['force'] === true
+      try {
+        await workspaces.archiveSession({ sessionId, ...(force ? { stopRunning: true } : {}) })
+        return { ok: true, sessionId }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (/session-active/i.test(message)) {
+          throw new RpcError('session/busy', '会话正在运行，先停止或勾选强制归档')
+        }
+        throw new RpcError('host/internal', message)
+      }
+    },
+
+    'session.unarchive': async (rc, p) => {
+      const workspaces = rc.ctx.get<WorkspaceController>('workspaceController', false)
+      if (workspaces?.unarchiveSession === undefined) {
+        throw new RpcError('host/unavailable', '宿主没有工作区服务')
+      }
+      const sessionId = str(p, 'sessionId')
+      await workspaces.unarchiveSession({ sessionId })
+      return { ok: true, sessionId }
+    },
 
     // ── M2 待实现：会话产物 ───────────────────────────────────────────────
     'session.changes': notImplemented('session.changes'),
