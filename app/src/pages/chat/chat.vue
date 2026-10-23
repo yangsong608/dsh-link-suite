@@ -10,6 +10,7 @@ import { computed, nextTick, onUnmounted, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { state, skinClass, themeClass, liteClass, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
+import { humanBytes, pickFile, pickImage } from '@/core/attach'
 import { currentLink, connectDevice, refreshAll, setSessionListener } from '@/core/link'
 import MossDot from '@/components/moss/MossDot.vue'
 
@@ -33,12 +34,38 @@ type Item =
 const wide = ref(false)
 
 function updateWide(): void {
+  const before = wide.value
   try {
     const info = uni.getWindowInfo?.() ?? uni.getSystemInfoSync()
     wide.value = Number(info.windowWidth ?? 0) >= 1000
   } catch {
     wide.value = false
   }
+  // 刚进入宽屏：右栏是常驻的，需要立刻有产物数据，
+  // 否则会停在"这一轮还没有产物"（其实只是没拉过）。
+  if (!before && wide.value && sessionId.value !== '') void loadChanges()
+}
+
+/*
+ * 旋转必须重算，否则"横屏三栏"只在进入页面那一刻成立：
+ * 竖屏进入 → 转横屏 → 还是单列（用户会以为没做适配）。
+ * uni 的 onWindowResize 在 App 与 H5 都可用；拿不到就退回监听 orientation。
+ */
+/** 固定引用：offWindowResize 必须传同一个函数才能解绑。 */
+const onResize = (): void => { updateWide() }
+
+function bindResize(): void {
+  try {
+    uni.onWindowResize(onResize)
+  } catch {
+    // 老版本/不支持的平台：至少监听浏览器 resize
+    if (typeof window !== 'undefined') window.addEventListener('resize', onResize)
+  }
+}
+
+function unbindResize(): void {
+  try { uni.offWindowResize(onResize) } catch { /* 平台不支持就算了 */ }
+  if (typeof window !== 'undefined') window.removeEventListener('resize', onResize)
 }
 
 const tab = ref<'chat' | 'trace' | 'files'>('chat')
@@ -50,6 +77,19 @@ const fileItems = ref<{ path: string; op: string; additions?: number; deletions?
 /** 产物是近似的：只有文件工具的记录，没有 shell/git。必须告诉用户。 */
 const changesNote = ref('')
 const diffView = ref<{ path: string; hunks: { t: string; s: string }[] } | undefined>(undefined)
+
+/** 待发附件。图片内联；文件先上传换成 receiptId。 */
+interface PendingAttach {
+  kind: 'image' | 'file'
+  name: string
+  bytes: number
+  data?: string
+  mediaType?: string
+  receiptId?: string
+  uploading?: boolean
+  error?: string
+}
+const attaches = ref<PendingAttach[]>([])
 
 const title = ref('会话')
 const host = ref('')
@@ -296,6 +336,73 @@ async function queueEdit(item: { itemId: string; text: string }): Promise<void> 
   })
 }
 
+/**
+ * ＋ 按钮：选图 / 选文件。
+ *
+ * 图片内联（prompt 的 image 块直接带 base64），文件走 fs.upload 换 receiptId。
+ * 两者都先进待发列表，用户可以删掉再发——选错了不该被迫发出去。
+ */
+function pickAttach(): void {
+  haptic('light')
+  uni.showActionSheet({
+    itemList: ['拍照 / 选图片', '选择文件'],
+    success: (res) => {
+      if (res.tapIndex === 0) void addImage()
+      else if (res.tapIndex === 1) void addFile()
+    },
+  })
+}
+
+async function addImage(): Promise<void> {
+  try {
+    const picked = await pickImage()
+    if (picked === undefined) return
+    attaches.value.push({
+      kind: 'image',
+      name: picked.name,
+      bytes: picked.bytes,
+      data: picked.data,
+      mediaType: picked.mediaType,
+    })
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 20) : '选图失败', icon: 'none' })
+  }
+}
+
+async function addFile(): Promise<void> {
+  const link = currentLink()
+  if (link === undefined || sessionId.value === '') {
+    uni.showToast({ title: '先连接一台电脑', icon: 'none' })
+    return
+  }
+  try {
+    const picked = await pickFile()
+    if (picked === undefined) return
+    const item: PendingAttach = { kind: 'file', name: picked.name, bytes: picked.bytes, uploading: true }
+    attaches.value.push(item)
+    try {
+      // receiptId 只在同一会话的 Agent 作用域内有效，所以必须带 sessionId
+      const out = await link.call<{ receiptId: string }>('fs.upload', {
+        sessionId: sessionId.value,
+        name: picked.name,
+        data: picked.data,
+      })
+      item.receiptId = out.receiptId
+    } catch (e) {
+      item.error = e instanceof Error ? e.message.slice(0, 24) : '上传失败'
+    } finally {
+      item.uploading = false
+    }
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 20) : '选文件失败', icon: 'none' })
+  }
+}
+
+function removeAttach(index: number): void {
+  haptic('light')
+  attaches.value.splice(index, 1)
+}
+
 async function loadCatalog(): Promise<void> {
   if (models.value.length > 0) return
   const link = currentLink()
@@ -423,7 +530,8 @@ async function approve(item: Extract<Item, { k: 'approval' }>, ok: boolean): Pro
 
 async function send(): Promise<void> {
   const text = draft.value.trim()
-  if (text.length === 0 || sending.value) return
+  // 只发附件也是合法操作（"把这张图给它看"），所以空文字不直接返回
+  if ((text.length === 0 && attaches.value.length === 0) || sending.value) return
   const link = currentLink()
   if (link === undefined) {
     errorText.value = '尚未连接主机，请先在首页连接或配对'
@@ -434,11 +542,27 @@ async function send(): Promise<void> {
     return
   }
 
+  // 附件先定稿：有上传失败的就不让发，避免"以为发了其实丢了一半"
+  const failed = attaches.value.find((a) => a.error !== undefined)
+  if (failed !== undefined) {
+    errorText.value = `「${failed.name}」上传失败，删掉它或重试`
+    return
+  }
+  const sending_attaches = attaches.value.filter((a) => a.uploading !== true)
+  const images = sending_attaches
+    .filter((a) => a.kind === 'image' && a.data !== undefined)
+    .map((a) => ({ mediaType: a.mediaType ?? 'image/png', data: a.data as string }))
+  const receipts = sending_attaches
+    .filter((a) => a.kind === 'file' && a.receiptId !== undefined)
+    .map((a) => a.receiptId as string)
+
   haptic('medium')
   sending.value = true
   errorText.value = ''
-  items.value.push({ k: 'user', text, at: nowLabel() })
+  const attachLabel = sending_attaches.length > 0 ? `（${String(sending_attaches.length)} 个附件）` : ''
+  items.value.push({ k: 'user', text: text + attachLabel, at: nowLabel() })
   draft.value = ''
+  attaches.value = []
   void scrollToEnd()
 
   try {
@@ -454,13 +578,19 @@ async function send(): Promise<void> {
      * 空闲时直接发（等价于开新的一轮）。
      */
     if (sessionStatus.value === 'running') {
-      await link.call('session.queue.push', { sessionId: sessionId.value, text, requestId })
+      await link.call('session.queue.push', { sessionId: sessionId.value, text, requestId, attachments: receipts })
       await loadQueue()
       uni.showToast({ title: '已加入队列，当前这轮结束后执行', icon: 'none' })
       return
     }
 
-    await link.call('session.prompt', { sessionId: sessionId.value, text, requestId })
+    await link.call('session.prompt', {
+      sessionId: sessionId.value,
+      text,
+      requestId,
+      ...(receipts.length === 0 ? {} : { attachments: receipts }),
+      ...(images.length === 0 ? {} : { images }),
+    })
   } catch (error) {
     errorText.value = `发送失败：${error instanceof Error ? error.message : String(error)}`
   } finally {
@@ -598,6 +728,7 @@ function onSessionEvent(method: string, payload: unknown): void {
 
 onLoad((q) => {
   updateWide()
+  bindResize()
   const device = state.devices.find((d) => d.deviceId === state.activeId) ?? state.devices[0]
   host.value = device?.name ?? ''
   if (device !== undefined) connectDevice(device)
@@ -638,6 +769,7 @@ onLoad((q) => {
 // 用 Vue 的 onUnmounted 而不是 uni 的 onUnload：后者在当前版本的类型入口里
 // 没有导出（运行时有，但 vue-tsc 会红）。行为等价，且这里本来就只关心组件销毁。
 onUnmounted(() => {
+  unbindResize()
   // 页面离开就取消监听，避免回退后旧页面的闭包继续改 items
   setSessionListener(undefined)
 })
@@ -825,8 +957,18 @@ onUnmounted(() => {
         <text v-if="queueCount > 0" class="queue mono t3">{{ queueCount }} 条排队</text>
       </view>
 
+      <!-- 待发附件：选错了可以删掉再发，不该被迫发出去 -->
+      <view v-if="attaches.length > 0" class="attach-row">
+        <view v-for="(a, i) in attaches" :key="i" class="attach-chip" :class="{ bad: a.error !== undefined }">
+          <text class="attach-kind mono">{{ a.kind === 'image' ? 'IMG' : 'FILE' }}</text>
+          <text class="attach-name">{{ a.name }}</text>
+          <text class="attach-size mono">{{ a.uploading ? '上传中' : a.error ?? humanBytes(a.bytes) }}</text>
+          <text class="attach-x" @tap="removeAttach(i)">×</text>
+        </view>
+      </view>
+
       <view class="field">
-        <view class="plus mono" @tap="haptic('light')">+</view>
+        <view class="plus mono" @tap="pickAttach">+</view>
         <input v-model="draft" class="in" placeholder="发指令…" placeholder-class="ph" @confirm="send" />
         <!--
           运行中显示"停止"，空闲显示"发送"。
@@ -844,7 +986,10 @@ onUnmounted(() => {
         <view
           v-else
           class="send"
-          :class="{ on: draft.length > 0 && !sending, 'is-disabled': draft.length === 0 || sending }"
+          :class="{
+            on: (draft.length > 0 || attaches.length > 0) && !sending,
+            'is-disabled': (draft.length === 0 && attaches.length === 0) || sending,
+          }"
           @tap="send"
         >
           <view class="ico-up" />
@@ -950,20 +1095,31 @@ onUnmounted(() => {
  *   左 240 会话列表 | 中 flex 对话 | 右 300 产物
  * 窄屏时 .wide 不生效，chat-main 独占整屏，布局与原来一致。
  */
+/*
+ * 注意：不要给这些列写 height:100%。
+ *
+ * 根容器（.dsh）只有 min-height，没有确定的高度 —— 百分比高度会解析成
+ * auto，于是旋转到横屏后三列都只有内容那么高，下半屏空着。
+ * 正确做法是让根容器在宽屏时拥有确定高度，列靠 flex 的默认 stretch 撑满。
+ */
 .chat-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  height: 100%;
 }
 
-.dsh.wide { flex-direction: row; }
+.dsh.wide {
+  flex-direction: row;
+  height: 100vh;   /* 老 WebView 兜底 */
+  height: 100dvh;  /* 跟随视口（旋转后立即生效） */
+}
 
 .rail-left,
 .rail-right {
   flex: none;
-  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--s1);
@@ -1222,6 +1378,47 @@ onUnmounted(() => {
 }
 
 
+
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 8px;
+}
+
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--bd);
+  background: var(--s1);
+}
+
+/* 上传失败时描红：失败项不允许发送，必须让用户看见 */
+.attach-chip.bad { border-color: var(--danger-bd); background: var(--danger-soft); }
+
+.attach-kind {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--acc-soft);
+  color: var(--acc);
+}
+
+.attach-name {
+  font-size: 11.5px;
+  color: var(--t1);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-size { font-size: 10px; color: var(--t3); }
+.attach-x { font-size: 14px; color: var(--t3); padding: 0 2px; }
 
 .queue-dock {
   width: 100%;

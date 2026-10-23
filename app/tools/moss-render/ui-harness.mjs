@@ -275,6 +275,7 @@ function toStream(ev, seq, isHistory) {
         case 'session.queue.remove': return reply({ ok: true })
         case 'session.queue.steer': return reply({ ok: true })
         case 'session.changes': return reply(window.__MOCK__.changes)
+        case 'fs.upload': return reply({ receiptId: 'rcpt_mock_1', name: 'mock.txt', bytes: 1024, file: null })
         case 'session.diff': return reply(window.__MOCK__.hunks)
         case 'session.prompt':
           return reply({ ok: true, sessionId: frame.p?.sessionId })
