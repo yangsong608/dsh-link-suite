@@ -10,13 +10,14 @@
  */
 import { onLaunch } from '@dcloudio/uni-app'
 import { state, prefs } from '@/core/store'
-import { demoDevices } from '@/core/demo'
 
 onLaunch(() => {
-  // TODO(M1): 换成从本地设备表恢复再逐台重连；现在是演示数据。
-  // 放在 App 而不是首页里，是为了冷启动直接落到「会话」页时列表也不是空的。
-  if (state.devices.length === 0) state.devices = demoDevices()
-  if (!state.activeId) state.activeId = state.devices[0]?.deviceId ?? ''
+  // 从本地缓存恢复设备表；没有缓存就是空表（首页显示"还没有设备"）。
+  // 这里不再塞演示数据：演示数据会让"没连上"看起来像"连上了但没内容"，
+  // 是这个阶段最容易误导人的一种"看起来能用"。
+  if (!state.activeId && state.devices.length > 0) {
+    state.activeId = state.devices[0]?.deviceId ?? ''
+  }
 
   try {
     const info = uni.getSystemInfoSync()

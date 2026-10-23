@@ -332,7 +332,8 @@ function makeHttpHandler(
       // 用户必须在电脑前确认，手机才有码可输。这与安全模型同向：
       // 配对码只是"谁先拿到"的凭据，真正的授权动作是这里的 approve。
       if (url.pathname === '/dsh-link/pair/start' && req.method === 'POST') {
-        const session = devices?.startPair(cfg.gateway.pairTtlMs)
+        // PC 侧点「生成配对码」= 本人在电脑前 = 物理在场证明，直接预批准
+        const session = devices?.startPair(cfg.gateway.pairTtlMs, true)
         if (session === undefined) {
           json(503, { error: '设备表未就绪' })
           return

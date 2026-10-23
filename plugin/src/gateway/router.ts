@@ -134,7 +134,9 @@ export function createHandlers(): GatewayHandlers {
     // ── 配对与设备 ────────────────────────────────────────────────────────
     // pair.* 是预认证方法：未配对设备也要能调，否则配对流程死锁。
     'pair.start': async (rc) => {
-      const session = rc.devices.startPair(rc.cfg.gateway.pairTtlMs)
+      // 手机自助发起的配对**不**预批准：必须在 PC 上点一次确认。
+      // 否则任何能连上端口的人都能给自己发一个码并配对成功。
+      const session = rc.devices.startPair(rc.cfg.gateway.pairTtlMs, false)
       rc.ctx.logger?.info('[dsh-link] 待配对：%s（%ds 内有效）', session.code, Math.round(rc.cfg.gateway.pairTtlMs / 1000))
       return {
         code: session.code,

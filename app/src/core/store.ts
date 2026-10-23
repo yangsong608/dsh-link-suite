@@ -12,13 +12,39 @@ export type SkinMode = 'auto' | 'moss' | '550w'
 
 export interface DeviceCard extends DeviceInfo {
   /** 连接态与锁态是正交的两个维度，不要合成一个字段（见 docs/02 §6.3） */
-  readonly conn: 'offline' | 'connecting' | 'needs-auth' | 'online'
-  readonly latencyMs?: number
-  readonly host?: HostInfo
-  readonly lock?: LockState
-  readonly sessionCount?: number
-  readonly runningCount?: number
-  readonly endpointKind?: 'lan' | 'relay' | 'tailscale'
+  conn: 'offline' | 'connecting' | 'needs-auth' | 'online'
+  latencyMs?: number
+  host?: HostInfo
+  lock?: LockState
+  sessionCount?: number
+  runningCount?: number
+  endpointKind?: 'lan' | 'relay' | 'tailscale'
+  /**
+   * 连接地址。宿主**不**下发它（那是客户端的事），由配对时写入本地缓存。
+   * 没有它就无法连接——首页据此显示"需要重新配对"。
+   */
+  endpoint?: { url: string; kind: 'lan' | 'relay' | 'tailscale' | 'custom' }
+}
+
+/** 会话行（列表页用；字段与协议 SessionSummary 对齐）。 */
+export interface SessionRow {
+  id: string
+  workspaceId: string
+  title: string
+  status: 'idle' | 'running' | 'waiting-approval' | 'waiting-input' | 'done' | 'error'
+  updatedAt: number
+  model?: string
+  excerpt?: string
+}
+
+/** 工作区行。 */
+export interface WorkspaceRow {
+  id: string
+  name: string
+  path: string
+  pinned?: boolean
+  sessionCount?: number
+  updatedAt?: number
 }
 
 interface AppState {
@@ -26,6 +52,10 @@ interface AppState {
   light: boolean
   lite: boolean
   devices: DeviceCard[]
+  /** 会话列表（真实数据；空数组 = 还没拉到或真的没有）。 */
+  sessions: SessionRow[]
+  /** 工作区列表。 */
+  workspaces: WorkspaceRow[]
   activeId: string
   /** 当前是否有"在等你"的事（审批 / 提问）。它决定底部会话角标，不决定皮肤。 */
   waiting: number
@@ -43,6 +73,8 @@ export const state = reactive<AppState>({
   light: false,
   lite: false,
   devices: [],
+  sessions: [],
+  workspaces: [],
   activeId: '',
   waiting: 0,
   alertPage: false,

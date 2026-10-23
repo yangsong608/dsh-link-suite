@@ -14,6 +14,13 @@ export type LinkStatus = 'offline' | 'connecting' | 'online' | 'needs-auth'
 export interface LinkEndpoint {
   readonly url: string
   readonly kind: 'lan' | 'relay' | 'tailscale' | 'custom'
+  /**
+   * 配对拿到的 bearer token。
+   *
+   * 放在 endpoint 里而不是单独一个字段：它和地址是同一件事的两半——
+   * 地址说"连哪台机器"，令牌说"凭什么连"。分开传会出现"连对了但没认证"的半成品状态。
+   */
+  readonly token?: string
 }
 
 type Listener = (payload: unknown) => void
@@ -53,8 +60,14 @@ export class Link {
     if (this.#closed || this.#sock !== undefined) return
     this.#setStatus('connecting')
 
+    // 令牌走 query 参数：浏览器/uni-app 的 WebSocket 无法设置 Authorization 头。
+    // 代价是令牌会出现在宿主日志的 URL 里，所以宿主侧日志必须脱敏（已做）。
+    const url = this.endpoint.token === undefined
+      ? this.endpoint.url
+      : `${this.endpoint.url}${this.endpoint.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(this.endpoint.token)}`
+
     const sock = uni.connectSocket({
-      url: this.endpoint.url,
+      url,
       // 子协议表明版本；服务端据此拒绝不兼容客户端，而不是让它们握上手再出错
       protocols: ['dshlink.v1'],
       complete: () => {},

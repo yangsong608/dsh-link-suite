@@ -142,15 +142,21 @@ export class DeviceRegistry {
 
   // ── 配对 ────────────────────────────────────────────────────────────────
 
-  /** 生成一个 6 位配对码，TTL 默认 120s。由 PC 侧展示，用户在手机上输入。 */
-  startPair(ttlMs = 120_000): PairSession {
+  /**
+   * 生成一个 6 位配对码，TTL 默认 120s。由 PC 侧展示，用户在手机上输入。
+   *
+   * `preApproved` 是给 PC 侧路由用的：人在电脑前点了"生成配对码"这个动作
+   * 本身就是物理在场的证明，不需要再点一次"允许"。手机端自己调的
+   * pair.start 则必须显式批准——否则任何连得上端口的人都能自助配对。
+   */
+  startPair(ttlMs = 120_000, preApproved = false): PairSession {
     const code = String(randomInt(0, 10 ** CODE_DIGITS)).padStart(CODE_DIGITS, '0')
     const now = Date.now()
     const session: PairSession = {
       code,
       createdAt: now,
       expiresAt: now + ttlMs,
-      approved: false,
+      approved: preApproved,
       consumed: false,
     }
     this.#pairs.set(code, session)

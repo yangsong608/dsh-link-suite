@@ -135,6 +135,21 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       socket.destroy()
       return
     }
+    // 认证令牌：优先 Authorization 头，其次 query（浏览器 WebSocket 无法带自定义头）
+    const authHeader = req.headers.authorization
+    const bearer = typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.slice(7).trim()
+      : undefined
+    const fromQuery = (() => {
+      try {
+        return new URL(req.url ?? '/', 'http://x').searchParams.get('token') ?? undefined
+      } catch {
+        return undefined
+      }
+    })()
+    const presented = bearer ?? fromQuery
+    const authenticated = presented === undefined ? undefined : rc.devices.authenticate(presented)
+
     const verdict = admission.admitConnection(ip)
     if (!verdict.ok) {
       rc.ctx.logger?.warn('[dsh-link] 拒绝连接 %s：%s', ip, verdict.reason)
@@ -143,7 +158,17 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
     }
     // 通过时不做任何事：WebSocketServer 自己的 upgrade 监听会接管。
     // 但额度已经在上面扣了，所以 connection 事件里不能再重复扣。
-    ;(socket as { __dshLinkAdmitted?: boolean }).__dshLinkAdmitted = verdict.ok
+    const carrier = socket as { __dshLinkAdmitted?: boolean; __dshLinkDevice?: { id: string; role: DeviceRole; label: string } }
+    carrier.__dshLinkAdmitted = verdict.ok
+    // 令牌有效就记在 socket 上，connection 事件里直接升格为已认证——
+    // 已配对设备重连不该再走一次配对流程。
+    if (authenticated !== undefined) {
+      carrier.__dshLinkDevice = {
+        id: authenticated.deviceId,
+        role: authenticated.role,
+        label: authenticated.label,
+      }
+    }
   })
 
   const send = (conn: Conn, frame: Frame): void => {
@@ -247,11 +272,25 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       seq: 0,
       preAuthTimer: undefined,
     }
-    conns.set(conn.id, conn)
-    rc.ctx.logger?.info('[dsh-link] 连接来自 %s（%s）', ip, conn.id)
+    // 已配对设备带 token 重连：直接升格，不必再配对
+    const known = (req.socket as { __dshLinkDevice?: { id: string; role: DeviceRole; label: string } }).__dshLinkDevice
+    if (known !== undefined) {
+      conn.deviceId = known.id
+      conn.role = known.role
+      conn.label = known.label
+      conn.authenticated = true
+    }
 
-    // 未认证连接不能无限期挂着
-    conn.preAuthTimer = setTimeout(() => {
+    conns.set(conn.id, conn)
+    rc.ctx.logger?.info(
+      '[dsh-link] 连接来自 %s（%s，%s）',
+      ip,
+      conn.id,
+      conn.authenticated ? `已认证 ${conn.label}` : '未认证',
+    )
+
+    // 未认证连接不能无限期挂着（已认证连接不需要这个计时器）
+    if (!conn.authenticated) conn.preAuthTimer = setTimeout(() => {
       if (conn.authenticated) return
       rc.ctx.logger?.info('[dsh-link] 未认证超时，断开 %s', conn.id)
       try {
@@ -260,7 +299,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
         /* 已断 */
       }
     }, PRE_AUTH_TIMEOUT_MS)
-    conn.preAuthTimer.unref?.()
+    conn.preAuthTimer?.unref?.()
 
     ws.on('message', (data) => {
       const raw = typeof data === 'string' ? data : data.toString()
