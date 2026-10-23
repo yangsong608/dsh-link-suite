@@ -22,6 +22,7 @@ import { bindHost, normalizeConfig, type LinkConfig } from './config.js'
 import type { DshContext, WebServerService } from './dsh.js'
 import { LockService } from './lock/index.js'
 import { DeviceRegistry } from './gateway/devices.js'
+import { createApprovalBridge, createSubscriptionHub, type Deps } from './adapters/live.js'
 import { createHandlers, type RouteContext } from './gateway/router.js'
 import { startGateway, type Gateway } from './gateway/server.js'
 
@@ -91,8 +92,28 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
   const devices = new DeviceRegistry(join(LINK_DIR, 'devices.json'))
   await devices.load()
 
-  // ── 网关 ────────────────────────────────────────────────────────────────
+  // ── 订阅与审批 ──────────────────────────────────────────────────────────
+  // 两者都依赖网关（推帧 / 广播），所以用晚绑定：先建对象，网关起来后它们读到的
+  // getter 已经有值。dispose 由 ctx.effect 统一收尾。
   let gateway: Gateway | undefined
+  const deps: Deps = {
+    ctx,
+    lock,
+    sendEvent: (connId: string, channel: string, method: string, payload: unknown) => {
+      gateway?.sendEvent(connId, channel, method, payload)
+    },
+    broadcast: (method: string, payload: unknown) => {
+      gateway?.broadcast(method, payload)
+    },
+    deviceOf: (connId: string) => gateway?.deviceOf(connId),
+    get authenticatedConnections() {
+      return gateway?.authenticatedConnections ?? 0
+    },
+  }
+  const subscriptions = createSubscriptionHub(deps)
+  const approvals = createApprovalBridge(deps)
+
+  // ── 网关 ────────────────────────────────────────────────────────────────
   const rc: RouteContext = {
     ctx,
     cfg,
@@ -102,6 +123,17 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     dshVersion,
     // 晚绑定：网关需要 handlers，handlers 又需要网关（pair.finish 要升格连接）。
     gateway: () => gateway,
+    subscriptions: {
+      open: (sessionId, connId) => {
+        // 未认证连接不该能订阅会话事件
+        const deviceId = gateway?.deviceOf(connId)
+        if (deviceId === undefined) return false
+        return subscriptions.open(sessionId, connId, deviceId)
+      },
+    },
+    approvals: {
+      settle: (id, outcome, deviceId) => approvals.settle(id, outcome, deviceId),
+    },
   }
 
   if (cfg.gateway.enabled) {
@@ -144,6 +176,8 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
 
   ctx.effect(
     () => () => {
+      subscriptions.dispose()
+      approvals.dispose()
       void lock.dispose()
       void gateway?.close()
     },

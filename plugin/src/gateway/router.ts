@@ -8,11 +8,19 @@
  * 严格代理下直接 `ctx.sessionController` 会抛错，即使服务不存在也一样。
  */
 
+import { randomUUID } from 'node:crypto'
+
 import { RpcError, DEFAULT_CAPS, METHOD_POLICY, type DeviceRole, type Method } from '@dsh-link/protocol'
-import type { DshContext, SessionController, PluginManager } from '../dsh.js'
+import type { DshContext, SessionController, PluginManager, WorkspaceRegistry } from '../dsh.js'
 import type { LinkConfig } from '../config.js'
 import type { LockService } from '../lock/index.js'
 import type { DeviceRegistry } from './devices.js'
+import { toSessionSummaries, type HostSessionSummary } from '../adapters/sessions.js'
+
+/** 软读会话服务；宿主没装会话能力时返回 undefined，由 handler 决定怎么降级。 */
+function sessionsOf(ctx: DshContext): SessionController | undefined {
+  return ctx.get<SessionController>('sessionController', false)
+}
 
 export interface CallMeta {
   readonly deviceId: string
@@ -44,6 +52,14 @@ export interface RouteContext {
         disconnectDevice(deviceId: string): number
       }
     | undefined
+  /** 会话事件订阅表（follow 打开后由 server 推帧）。M1 可缺省。 */
+  readonly subscriptions?: {
+    open(sessionId: string, connId: string): boolean
+  }
+  /** 待处理审批表（PC 触发、手机应答）。M1 可缺省。 */
+  readonly approvals?: {
+    settle(id: string, outcome: 'allowed-once' | 'rejected', deviceId: string): boolean
+  }
 }
 
 export type Handler = (rc: RouteContext, params: Record<string, unknown>, meta: CallMeta) => Promise<unknown>
@@ -175,16 +191,107 @@ export function createHandlers(): GatewayHandlers {
     },
 
     // ── 工作区 ────────────────────────────────────────────────────────────
-    'workspace.list': notImplemented('workspace.list'),
+    'workspace.list': async (rc) => {
+      const registry = rc.ctx.get<WorkspaceRegistry>('workspaceRegistry', false)
+      const workspaces = registry?.list?.() ?? []
+      return {
+        workspaces: workspaces.map((ws) => ({
+          id: String(ws.id),
+          name: ws.title,
+          path: ws.path,
+          pinned: false,
+          sessionCount: 0,
+          updatedAt: Date.parse(ws.createdAt) || Date.now(),
+        })),
+      }
+    },
     'workspace.create': notImplemented('workspace.create'),
     'dir.list': notImplemented('dir.list'),
 
-    // ── M1 待实现：会话主线 ───────────────────────────────────────────────
-    'session.list': notImplemented('session.list'),
-    'session.prompt': notImplemented('session.prompt'),
-    'session.cancel': notImplemented('session.cancel'),
-    'session.follow': notImplemented('session.follow'),
-    'approval.answer': notImplemented('approval.answer'),
+    // ── 会话主线 ──────────────────────────────────────────────────────────
+    'session.list': async (rc, _p, meta) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+
+      const workspaces = rc.ctx.get<WorkspaceRegistry>('workspaceRegistry', false)?.list?.() ?? []
+      const workspaceId = workspaces[0] === undefined ? '' : String(workspaces[0].id)
+
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 5_000)
+      timer.unref?.()
+      try {
+        const value = (await sessions.list({}, controller.signal)) as { items?: readonly HostSessionSummary[] }
+        return { sessions: toSessionSummaries(value?.items ?? [], workspaceId) }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+
+    'session.prompt': async (rc, p, meta) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+      const sessionId = str(p, 'sessionId')
+      const text = str(p, 'text')
+
+      // requestId 必须由客户端提供并持久化（断线重发时用它去重）。
+      // 客户端没给就现造一个——但那样重发可能重复执行，所以文档里要求 App 必须传。
+      const requestId = typeof p['requestId'] === 'string' && p['requestId'].length > 0
+        ? p['requestId']
+        : randomUUID()
+
+      const controller = new AbortController()
+      try {
+        await sessions.prompt(
+          {
+            requestId,
+            sessionId,
+            // steer：用户此刻就想影响正在跑的这一轮。
+            // queue 语义留给 session.queue.*（本轮未实现）。
+            mode: 'steer',
+            content: [{ type: 'text', text }],
+          },
+          controller.signal,
+        )
+        // 成功发送也算活动：避免"人在手机上操作，PC 却因空闲而锁"
+        rc.lock.touch()
+        return { accepted: true, requestId }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        // dsh 在会话忙且不允许 steer 时会抛；映射成 session/busy 让 App 能显示"排队或等待"
+        if (/busy|running|inbox/i.test(message)) {
+          throw new RpcError('session/busy', '会话正在运行中，请稍后再试或使用队列')
+        }
+        throw new RpcError('host/internal', message)
+      }
+    },
+
+    'session.cancel': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+      const sessionId = str(p, 'sessionId')
+      await sessions.cancel({ sessionId })
+      return { canceled: true }
+    },
+
+    // follow 是长连接：注册在当前连接的订阅表里，由 server 的心跳与断开清理负责收尾。
+    // 这里只返回订阅凭证，后续帧走 evt 通道 `sess:<id>`。
+    'session.follow': async (rc, p, meta) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+      const sessionId = str(p, 'sessionId')
+      const opened = rc.subscriptions?.open(sessionId, meta.connId)
+      if (opened === false) throw new RpcError('session/not-found', '会话不存在或无法订阅')
+      return { channel: `sess:${sessionId}`, sessionId }
+    },
+
+    'approval.answer': async (rc, p, meta) => {
+      const id = str(p, 'id')
+      const outcome = p['outcome']
+      const approved = outcome === 'allowed-once' || outcome === 'approve' || outcome === true
+      const settled = rc.approvals?.settle(id, approved ? 'allowed-once' : 'rejected', meta.deviceId)
+      if (settled !== true) throw new RpcError('session/not-found', '审批请求不存在或已过期')
+      return { settled: true, outcome: approved ? 'allowed-once' : 'rejected' }
+    },
 
     // ── M2 待实现：执行过程 ───────────────────────────────────────────────
     // 数据源是 dsh 的 session 事件流；`redacted` 裁剪在 handler 里做，

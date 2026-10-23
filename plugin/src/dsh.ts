@@ -51,11 +51,34 @@ export interface WebServerService {
 }
 
 /** 会话服务（只声明我们用到的部分）。 */
+/**
+ * 会话服务。
+ *
+ * 形状必须与宿主真实签名一致——这两条是实测出来的，不是猜的：
+ *   - `list(request, signal)`：signal 是**必填**，缺了会在运行时抛
+ *   - `follow(request, signal)`：返回 AsyncIterable，不是 Promise
+ * 写错这里的代价是"类型全绿、运行时全红"，所以改之前先看
+ * packages/api/session-controller/src/index.ts 的装饰器签名。
+ */
 export interface SessionController {
-  list(params: unknown, signal?: AbortSignal): Promise<unknown>
-  prompt(params: unknown, signal?: AbortSignal): Promise<unknown>
-  cancel(params: unknown): Promise<unknown>
-  follow(params: unknown, signal?: AbortSignal): AsyncIterable<unknown>
+  list(request: { cursor?: string }, signal: AbortSignal): Promise<unknown>
+  prompt(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  cancel(request: { sessionId: string }): Promise<unknown>
+  follow(request: Record<string, unknown>, signal: AbortSignal): AsyncIterable<unknown>
+}
+
+/** 工作区记录（只声明我们读到的字段）。 */
+export interface HostWorkspace {
+  readonly id: unknown
+  readonly path: string
+  readonly title: string
+  readonly createdAt: string
+}
+
+export interface WorkspaceRegistry {
+  list(): HostWorkspace[]
+  get(id: unknown): HostWorkspace | undefined
+  create(path: string, title?: string): Promise<HostWorkspace>
 }
 
 export interface PluginManager {

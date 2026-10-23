@@ -1,0 +1,176 @@
+/**
+ * 适配层自检：会话事件 → TraceItem / StreamItem，以及会话摘要映射。
+ *
+ * 这些是纯函数，脱开宿主就能测——这正是把它们从 handler 里抽出来的原因。
+ * 重点覆盖"未知事件不能抛错"：dsh 加事件类型比我们跟得快，抛错会让整条流断掉。
+ */
+
+import assert from 'node:assert/strict'
+
+import {
+  sessionStatus,
+  sessionTitle,
+  toSessionSummaries,
+  toSessionSummary,
+  toStreamItem,
+  toTraceItem,
+} from '../lib/adapters/sessions.js'
+
+let passed = 0
+const test = (name, fn) => {
+  fn()
+  passed++
+  console.log(`  ok  ${name}`)
+}
+
+// ── 会话摘要 ──────────────────────────────────────────────────────────────
+
+test('running 优先于一切（正在跑就是 running）', () => {
+  assert.equal(sessionStatus({ sessionId: 's', updatedAt: 1, running: true, blank: true }), 'running')
+})
+
+test('空白会话是 idle，有内容且不在跑是 done', () => {
+  assert.equal(sessionStatus({ sessionId: 's', updatedAt: 1, running: false, blank: true }), 'idle')
+  assert.equal(sessionStatus({ sessionId: 's', updatedAt: 1, running: false, blank: false }), 'done')
+})
+
+test('标题优先取 projections.title', () => {
+  assert.equal(
+    sessionTitle({ sessionId: 's', updatedAt: 1, running: false, blank: false, cwd: '/a/b', projections: { title: '修 bug' } }),
+    '修 bug',
+  )
+})
+
+test('没有 title 时退化成 cwd 尾段', () => {
+  assert.equal(
+    sessionTitle({ sessionId: 's', updatedAt: 1, running: false, blank: false, cwd: '/Users/x/projects/demo' }),
+    'demo',
+  )
+})
+
+test('既没有 title 也没有 cwd 时给明确默认值', () => {
+  assert.equal(sessionTitle({ sessionId: 's', updatedAt: 1, running: false, blank: true }), '未命名会话')
+})
+
+test('列表按 updatedAt 倒序，并过滤掉没有 id 的脏数据', () => {
+  const items = toSessionSummaries(
+    [
+      { sessionId: 'old', updatedAt: 100, running: false, blank: false },
+      { sessionId: 'new', updatedAt: 300, running: true, blank: false },
+      { sessionId: '', updatedAt: 999, running: false, blank: false },
+      { updatedAt: 500, running: false, blank: false },
+    ],
+    'ws_1',
+  )
+  assert.deepEqual(items.map((i) => i.id), ['new', 'old'])
+  assert.equal(items[0].workspaceId, 'ws_1')
+  assert.equal(items[0].status, 'running')
+})
+
+// ── 事件 → TraceItem ──────────────────────────────────────────────────────
+
+test('assistant/message → text', () => {
+  const item = toTraceItem({ type: 'assistant/message', seq: 3, at: 10, data: { text: '你好' } })
+  assert.equal(item.k, 'text')
+  assert.equal(item.text, '你好')
+  assert.equal(item.seq, 3)
+})
+
+test('assistant/message 缺 text 时丢弃（不产出空气泡）', () => {
+  assert.equal(toTraceItem({ type: 'assistant/message', seq: 3, data: {} }), undefined)
+})
+
+test('tool/call → tool，input 截断到 200 字符', () => {
+  const long = 'x'.repeat(500)
+  const item = toTraceItem({ type: 'tool/call', seq: 4, data: { toolName: 'Bash', input: long, target: 'ls' } })
+  assert.equal(item.k, 'tool')
+  assert.equal(item.tool, 'Bash')
+  assert.equal(item.target, 'ls')
+  assert.equal(item.input.length, 200)
+})
+
+test('tool/result → tool，output 截断到 400 字符并带 ok/ms', () => {
+  const item = toTraceItem({
+    type: 'tool/result',
+    seq: 5,
+    data: { toolName: 'Bash', output: 'y'.repeat(900), ok: false, ms: 12 },
+  })
+  assert.equal(item.k, 'tool')
+  assert.equal(item.output.length, 400)
+  assert.equal(item.ok, false)
+  assert.equal(item.ms, 12)
+})
+
+test('approval/asked → approval，带 id 与命令', () => {
+  const item = toTraceItem({ type: 'approval/asked', seq: 6, data: { id: 'a1', toolName: 'Bash', reason: '写文件' } })
+  assert.equal(item.k, 'approval')
+  assert.equal(item.id, 'a1')
+  assert.equal(item.cmd, 'Bash')
+  assert.equal(item.risk, '写文件')
+})
+
+test('turn/start 与 turn/end 用 note 表达（TraceKind 里没有 done）', () => {
+  const start = toTraceItem({ type: 'turn/start', seq: 7 })
+  const end = toTraceItem({ type: 'turn/end', seq: 8, data: { ok: true } })
+  assert.equal(start.k, 'note')
+  assert.equal(end.k, 'note')
+  assert.equal(end.text, '本轮结束')
+})
+
+test('error → error，带 code 与 msg', () => {
+  const item = toTraceItem({ type: 'error', seq: 9, data: { code: 'fs/escape', message: '越界' } })
+  assert.equal(item.k, 'error')
+  assert.equal(item.code, 'fs/escape')
+  assert.equal(item.msg, '越界')
+})
+
+test('未知事件静默丢弃，绝不抛错（dsh 加事件比我们跟得快）', () => {
+  assert.equal(toTraceItem({ type: 'brand/new-event', seq: 10, data: {} }), undefined)
+  assert.equal(toTraceItem({ type: 'tool/call' }), undefined, '缺 seq 也要丢弃')
+})
+
+test('redacted 时清空正文，但保留结构（半锁只看"改了什么"）', () => {
+  const item = toTraceItem(
+    { type: 'tool/result', seq: 11, data: { toolName: 'Bash', output: '敏感内容', ok: true } },
+    true,
+  )
+  assert.equal(item.k, 'tool')
+  assert.equal(item.redacted, true)
+  assert.equal(item.output, undefined)
+  assert.equal(item.tool, 'Bash')
+  assert.equal(item.ok, true)
+})
+
+// ── TraceItem → StreamItem ────────────────────────────────────────────────
+
+test('text → assist 气泡', () => {
+  const stream = toStreamItem({ k: 'text', seq: 1, at: 5, text: 'hi' })
+  assert.equal(stream.k, 'assist')
+  assert.equal(stream.text, 'hi')
+})
+
+test('tool → activity（聊天页只显示一行"在干什么"）', () => {
+  const stream = toStreamItem({ k: 'tool', seq: 2, at: 5, tool: 'Bash', target: 'npm test', ok: true })
+  assert.equal(stream.k, 'activity')
+  assert.equal(stream.tool, 'Bash')
+  assert.equal(stream.summary, 'npm test')
+})
+
+test('approval → approval 卡片', () => {
+  const stream = toStreamItem({ k: 'approval', seq: 3, at: 5, id: 'a1', cmd: 'Bash' })
+  assert.equal(stream.k, 'approval')
+  assert.equal(stream.id, 'a1')
+})
+
+test('轮次结束的 note → done 帧', () => {
+  assert.equal(toStreamItem({ k: 'note', seq: 4, at: 5, text: '本轮结束' }).k, 'done')
+  assert.equal(toStreamItem({ k: 'note', seq: 4, at: 5, text: '本轮失败' }).ok, false)
+})
+
+test('其它 note / think / file 不进聊天流（详情页才看）', () => {
+  assert.equal(toStreamItem({ k: 'note', seq: 5, at: 5, text: '会话标题：x' }), undefined)
+  assert.equal(toStreamItem({ k: 'think', seq: 6, at: 5, summary: '思考' }), undefined)
+  assert.equal(toStreamItem({ k: 'file', seq: 7, at: 5, path: 'a.ts', op: 'mod' }), undefined)
+})
+
+console.log(`\n${passed} passed`)

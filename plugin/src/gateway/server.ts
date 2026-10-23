@@ -91,6 +91,12 @@ export interface Gateway {
    * 认证状态只能有一个写入口，否则"某条连接到底认证没有"会散落在两处。
    */
   authenticate(connId: string, deviceId: string, role: DeviceRole, label: string): boolean
+  /** 向某条连接推一帧 evt（订阅分发用）。连接不存在时静默丢弃。 */
+  sendEvent(connId: string, channel: string, method: string, payload: unknown): void
+  /** 当前已认证的连接数。审批桥用它决定"要不要等手机回答"。 */
+  readonly authenticatedConnections: number
+  /** 某条连接属于哪台设备（审批归属校验用）。 */
+  deviceOf(connId: string): string | undefined
   readonly connections: number
 }
 
@@ -358,6 +364,20 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       return conns.size
     },
     broadcast,
+    sendEvent(connId, channel, method, payload) {
+      const conn = conns.get(connId)
+      if (conn === undefined) return
+      send(conn, { t: 'evt', ch: channel, seq: conn.seq++, m: method, p: payload })
+    },
+    get authenticatedConnections() {
+      let count = 0
+      for (const conn of conns.values()) if (conn.authenticated) count += 1
+      return count
+    },
+    deviceOf(connId) {
+      const conn = conns.get(connId)
+      return conn?.authenticated === true ? conn.deviceId : undefined
+    },
     disconnectDevice(deviceId: string): number {
       let closed = 0
       for (const conn of conns.values()) {
