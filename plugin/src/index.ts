@@ -212,6 +212,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
         if (deviceId === undefined) return false
         return subscriptions.open(sessionId, connId, deviceId)
       },
+      pushHistory: (sessionId, connId) => subscriptions.pushHistory(sessionId, connId),
     },
     approvals: {
       settle: (id, outcome, deviceId) => approvals.settle(id, outcome, deviceId),

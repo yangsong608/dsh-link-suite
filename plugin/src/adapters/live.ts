@@ -29,6 +29,13 @@ interface Subscription {
 export interface SubscriptionHub {
   /** 打开订阅；返回 false 表示同一连接已经订阅过同一会话（幂等，不算错误）。 */
   open(sessionId: string, connId: string, deviceId: string): boolean
+  /**
+   * 读取历史快照并推给某条连接。
+   *
+   * 这是"对话页没有历史"的修复：只订阅实时事件是不够的，
+   * 进来时必须先拿到已发生的消息。dsh 的 follow 首帧就是 snapshot。
+   */
+  pushHistory(sessionId: string, connId: string): Promise<{ pushed: number; hasMore: boolean }>
   /** 连接断开时清掉它的全部订阅。 */
   closeConn(connId: string): void
   dispose(): void
@@ -65,6 +72,50 @@ export interface Deps {
 export function createSubscriptionHub(deps: Deps): SubscriptionHub {
   const subs = new Map<string, Set<Subscription>>() // sessionId -> subs
   const byConn = new Map<string, Set<string>>() // connId -> sessionIds
+  /**
+   * 每个会话最近一条 tool/call 的工具名与目标。
+   *
+   * 用途：dsh 的 tool/result 事件**不带 callId 也不带工具名**
+   * （SessionEventMap 里只有 turn/step/message/error/meta），
+   * 客户端无法凭 id 配对。会话日志是串行的——一次工具跑完才有下一条——
+   * 所以 result 归到"最近的那条 call"是安全的。
+   *
+   * 并发工具调用（同一 step 多个 call 并发）会退化：result 都归到最近一条。
+   * 这是已知限制，比显示一串空的 "tool" 好得多。
+   */
+  const lastToolCall = new Map<string, { tool: string; target?: string }>()
+
+  /**
+   * 给 tool/result 补上工具名与目标。
+   *
+   * 返回的对象仍是一条 tool 条目，但带上 `callId` 之外的 `mergePrev` 语义：
+   * tool 名与 target 从最近的 call 继承，客户端据此把它合并到上一行。
+   */
+  function enrichToolResult(item: TraceItem, sessionId: string): TraceItem {
+    if (item.k !== 'tool') return item
+
+    // call 帧：记住它，供后续 result 继承
+    if (typeof item.tool === 'string' && item.tool.length > 0 && item.output === undefined) {
+      lastToolCall.set(sessionId, {
+        tool: item.tool,
+        ...(item.target === undefined ? {} : { target: item.target }),
+      })
+      return item
+    }
+
+    // result 帧：工具名空 = 这是结果，补上最近的 call 信息
+    if (item.tool.length === 0) {
+      const prev = lastToolCall.get(sessionId)
+      if (prev !== undefined) {
+        return {
+          ...item,
+          tool: prev.tool,
+          ...(item.target === undefined && prev.target !== undefined ? { target: prev.target } : {}),
+        }
+      }
+    }
+    return item
+  }
 
   // 会话事件 → trace → 每个订阅者
   deps.ctx.on('session/event', (session: unknown, event: unknown) => {
@@ -81,10 +132,20 @@ export function createSubscriptionHub(deps: Deps): SubscriptionHub {
     if (item === undefined) return
 
     for (const sub of watchers) {
-      // trace 帧给"执行过程"页；stream 帧给聊天页。同一条事件推两种投影，
-      // 由 App 决定渲染哪个——服务端不做"猜用户在看哪个页面"。
-      deps.sendEvent(sub.connId, `sess:${sessionId}`, 'session.trace', item satisfies TraceItem)
-      const stream = toStreamItem(item)
+      /*
+       * tool/result 在 dsh 的事件结构里**不带 callId**
+       * （见 core/session 的 SessionEventMap：{ turn, step, message, error?, meta? }），
+       * 所以客户端无法用 id 配对 call 与 result，只能按"紧跟在某条 call 之后的 result"
+       * 来归并。
+       *
+       * 这里在**服务端**把 result 的 tool 名与 target 从最近的同 step call 里补上，
+       * 客户端据此原地更新那一行，而不是再插一条空行。
+       * 放在服务端做的理由：会话事件是全局单流，这里天然知道顺序；
+       * 客户端可能因断线重连丢失上下文。
+       */
+      const enriched = enrichToolResult(item, sessionId)
+      deps.sendEvent(sub.connId, `sess:${sessionId}`, 'session.trace', enriched)
+      const stream = toStreamItem(enriched)
       if (stream !== undefined) {
         deps.sendEvent(sub.connId, `sess:${sessionId}`, 'session.stream', stream)
       }
@@ -112,6 +173,74 @@ export function createSubscriptionHub(deps: Deps): SubscriptionHub {
       connSet.add(sessionId)
       byConn.set(connId, connSet)
       return true
+    },
+
+    async pushHistory(sessionId, connId) {
+      const sessions = deps.ctx.get<{
+        follow?: (request: Record<string, unknown>, signal: AbortSignal) => AsyncIterable<unknown>
+      }>('sessionController', false)
+      if (sessions?.follow === undefined) return { pushed: 0, hasMore: false }
+
+      const controller = new AbortController()
+      // 只要首帧（snapshot），拿到就断开——不要留一个长订阅在这里
+      const timer = setTimeout(() => controller.abort(), 6000)
+      timer.unref?.()
+
+      let pushed = 0
+      let hasMore = false
+      try {
+        for await (const frame of sessions.follow(
+          { address: { kind: 'session', sessionId }, maxMessages: 50 },
+          controller.signal,
+        )) {
+          const f = frame as {
+            type?: string
+            cursor?: number
+            records?: readonly { event?: { type?: string; seq?: number; time?: number; data?: unknown } }[]
+            hasMore?: boolean
+            header?: unknown
+          }
+          // 首帧是 snapshot：含历史 records、cursor、hasMore
+          if (f.type !== 'snapshot') break
+
+          hasMore = f.hasMore === true
+          const state = deps.lock.get()
+          const redacted = state.soft && !state.locked
+
+          for (const record of f.records ?? []) {
+            const ev = record.event
+            if (ev?.seq === undefined || typeof ev.type !== 'string') continue
+            const item = toTraceItem(
+              { type: ev.type, seq: ev.seq, at: ev.time, data: (ev.data ?? {}) as Record<string, unknown> },
+              redacted,
+            )
+            if (item === undefined) continue
+            // 历史回放同样要补 result 的工具名：dsh 的 tool/result 不带它
+            const enriched = enrichToolResult(item, sessionId)
+            deps.sendEvent(connId, `sess:${sessionId}`, 'session.trace', enriched)
+            const stream = toStreamItem(enriched)
+            if (stream !== undefined) {
+              deps.sendEvent(connId, `sess:${sessionId}`, 'session.stream', { ...stream, history: true })
+            }
+            pushed += 1
+          }
+
+          // 告诉客户端"历史到此为止、后面是新事件"，避免它把两者混在一起排序
+          deps.sendEvent(connId, `sess:${sessionId}`, 'session.history.end', {
+            cursor: f.cursor ?? 0,
+            hasMore,
+            pushed,
+          })
+          break
+        }
+      } catch (error) {
+        deps.ctx.logger?.warn('[dsh-link] 读取历史失败：%s', error instanceof Error ? error.message : String(error))
+        deps.sendEvent(connId, `sess:${sessionId}`, 'session.history.end', { cursor: 0, hasMore: false, pushed, error: true })
+      } finally {
+        clearTimeout(timer)
+        controller.abort()
+      }
+      return { pushed, hasMore }
     },
 
     closeConn(connId) {

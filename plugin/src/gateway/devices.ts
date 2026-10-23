@@ -53,6 +53,8 @@ export interface PairedDevice {
 
 export interface DeviceInfoView {
   readonly deviceId: string
+  /** 显示名。协议里的 DeviceInfo 用 name，这里同时给出两者，避免两端字段名不一致。 */
+  readonly name: string
   readonly label: string
   readonly role: DeviceRole
   readonly platform: string
@@ -111,6 +113,7 @@ export class DeviceRegistry {
       .filter((d) => d.revokedAt === undefined)
       .map((d) => ({
         deviceId: d.deviceId,
+        name: d.label,
         label: d.label,
         role: d.role,
         platform: d.platform,
@@ -172,13 +175,28 @@ export class DeviceRegistry {
     return true
   }
 
-  /** 当前待确认的配对会话（给 PC 页面轮询展示）。已过期的顺手清掉。 */
+  /**
+   * **等待用户确认**的配对会话。
+   *
+   * 只返回"还没被批准"的：已批准的（approved）说明确认动作已经发生，
+   * 再显示在待确认列表里就是错误的——而 PC 自己点「生成配对码」时
+   * 生成的码是**预批准**的，于是面板会一直显示"有 1 台设备等待确认"，
+   * 哪怕根本没人扫码。
+   *
+   * 这个字段的语义是"需要人做决定的事"，不是"当前有效的码"。
+   */
   pendingPairs(): PairSession[] {
     const now = Date.now()
     for (const [code, session] of this.#pairs) {
       if (session.expiresAt <= now) this.#pairs.delete(code)
     }
-    return [...this.#pairs.values()].filter((s) => !s.consumed)
+    return [...this.#pairs.values()].filter((s) => !s.consumed && !s.approved)
+  }
+
+  /** 当前有效（可被 finish）的码数量，用于排障与状态展示。 */
+  activePairCount(): number {
+    const now = Date.now()
+    return [...this.#pairs.values()].filter((s) => !s.consumed && s.expiresAt > now).length
   }
 
   /**
@@ -224,6 +242,7 @@ export class DeviceRegistry {
       result: {
         device: {
           deviceId: record.deviceId,
+          name: record.label,
           label: record.label,
           role: record.role,
           platform: record.platform,

@@ -16,7 +16,7 @@ import MossDot from '@/components/moss/MossDot.vue'
 type Item =
   | { k: 'user'; text: string; at: string }
   | { k: 'assist'; text: string; at: string; streaming?: boolean }
-  | { k: 'activity'; tool: string; summary: string; ms: string; ok?: boolean }
+  | { k: 'activity'; tool: string; summary: string; ms: string; ok?: boolean; callId?: string }
   | { k: 'approval'; id: string; cmd: string; risk: string; state: 'pending' | 'ok' | 'no'; at: string }
 
 const title = ref('会话')
@@ -25,6 +25,36 @@ const draft = ref('')
 const scrollTop = ref(0)
 const sessionId = ref('')
 const sending = ref(false)
+/** 历史是否还在加载。true 时显示骨架屏而不是"空会话"。 */
+const loadingHistory = ref(false)
+/** 头部状态点：由 snapshot / turn 事件更新 */
+const sessionStatus = ref<'idle' | 'running' | 'waiting' | 'done' | 'error'>('idle')
+/** 已加载的历史游标，用于向上翻页 */
+const oldestSeq = ref<number | undefined>(undefined)
+const hasMoreHistory = ref(false)
+
+/** 头部状态点的视觉映射。MossDot 只认这几个值。 */
+const dotForStatus = computed(() => {
+  switch (sessionStatus.value) {
+    case 'running': return 'connecting' as const
+    case 'waiting': return 'soft' as const
+    case 'error': return 'offline' as const
+    case 'done': return 'online' as const
+    // MossDot 只接受 online/connecting/offline/needs-auth/locked/soft，
+    // 空闲用 'soft'（半亮圆点）而不是自造一个 'idle'
+    default: return 'soft' as const
+  }
+})
+
+const statusLabel = computed(() => {
+  switch (sessionStatus.value) {
+    case 'running': return '运行中'
+    case 'waiting': return '等待批准'
+    case 'error': return '出错'
+    case 'done': return '已完成'
+    default: return '空闲'
+  }
+})
 /** 出错原因。空串表示没有错误——比一个 isError 布尔值好，因为要显示文案。 */
 const errorText = ref('')
 
@@ -37,6 +67,165 @@ const pendingApproval = computed(() => items.value.find((i) => i.k === 'approval
 
 function back(): void {
   uni.navigateBack()
+}
+
+/**
+ * 右上角菜单。
+ *
+ * 之前这个 ··· 只是装饰，点了没反应——比不显示更糟，
+ * 因为它暗示"这里有东西可以点"。
+ */
+function chatMenu(): void {
+  haptic('light')
+  uni.showActionSheet({
+    itemList: ['重命名会话', '归档会话', '查看会话信息'],
+    success: (res) => {
+      if (res.tapIndex === 0) void renameCurrent()
+      else if (res.tapIndex === 1) void archiveCurrent()
+      else if (res.tapIndex === 2) showInfo()
+    },
+  })
+}
+
+async function renameCurrent(): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+  uni.showModal({
+    title: '重命名会话',
+    editable: true,
+    content: title.value,
+    success: async (res) => {
+      if (!res.confirm) return
+      const next = String(res.content ?? '').trim()
+      if (next.length === 0) return
+      try {
+        await link.call('session.rename', { sessionId: sessionId.value, title: next })
+        title.value = next
+        uni.showToast({ title: '已重命名', icon: 'none' })
+      } catch (e) {
+        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
+      }
+    },
+  })
+}
+
+async function archiveCurrent(): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+  uni.showModal({
+    title: '归档这个会话？',
+    content: '归档后不再出现在列表里，日志仍保留在电脑上。',
+    confirmText: '归档',
+    success: async (res) => {
+      if (!res.confirm) return
+      try {
+        await link.call('session.archive', { sessionId: sessionId.value, force: true })
+        uni.showToast({ title: '已归档', icon: 'none' })
+        setTimeout(() => uni.navigateBack(), 600)
+      } catch (e) {
+        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
+      }
+    },
+  })
+}
+
+function showInfo(): void {
+  uni.showModal({
+    title: '会话信息',
+    content: `会话 ID：${sessionId.value}\n状态：${statusLabel.value}\n已加载：${items.value.length} 条`,
+    showCancel: false,
+    confirmText: '关闭',
+  })
+}
+
+/** 模型目录（第一次点开时拉取并缓存到本页生命周期内）。 */
+const models = ref<{
+  provider: string
+  name: string
+  models: { id: string; name: string; reasoning?: unknown }[]
+}[]>([])
+const selectedModel = ref<{ provider: string; model: string } | undefined>(undefined)
+const queueCount = ref(0)
+
+const modelLabel = computed(() => {
+  const m = selectedModel.value
+  if (m === undefined) return '默认模型'
+  for (const g of models.value) {
+    for (const x of g.models) {
+      if (x.id === m.model && (g.provider === m.provider || g.provider === '')) return x.name
+    }
+  }
+  return m.model
+})
+
+async function loadCatalog(): Promise<void> {
+  if (models.value.length > 0) return
+  const link = currentLink()
+  if (link === undefined) return
+  try {
+    const out = await link.call<{
+      default: { provider: string; model: string }
+      groups: { provider: string; name: string; models: { id: string; name: string; reasoning?: unknown }[] }[]
+    }>('session.modelCatalog')
+    models.value = out.groups ?? []
+    if (out.default?.model) selectedModel.value = { provider: out.default.provider, model: out.default.model }
+  } catch {
+    // 老宿主没有这个接口：不显示模型栏，而不是报错
+    models.value = []
+  }
+}
+
+function pickModel(): void {
+  haptic('light')
+  const link = currentLink()
+  if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+  void loadCatalog().then(() => {
+    /**
+     * 摊平模型列表。分组用「提供商 · 模型名」避免同名模型混淆
+     * （实测目录里多个 provider 都有 fine-tune 版本）。
+     */
+    const flat: { label: string; provider: string; model: string }[] = []
+    for (const g of models.value) {
+      for (const m of g.models) {
+        const prefix = g.name.length > 0 ? `${g.name} · ` : ''
+        flat.push({ label: `${prefix}${m.name}`, provider: g.provider, model: m.id })
+      }
+    }
+    if (flat.length === 0) {
+      uni.showToast({ title: '宿主没有可用模型', icon: 'none' })
+      return
+    }
+    uni.showActionSheet({
+      itemList: flat.slice(0, 20).map((x) => x.label),
+      success: (res) => {
+        const pick = flat[res.tapIndex]
+        if (pick === undefined) return
+        void link.call('session.selectModel', {
+          sessionId: sessionId.value,
+          provider: pick.provider,
+          model: pick.model,
+        }).then(() => {
+          selectedModel.value = { provider: pick.provider, model: pick.model }
+          uni.showToast({ title: `已切到 ${pick.label}`, icon: 'none' })
+        }).catch((e: unknown) => {
+          uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '切换失败', icon: 'none' })
+        })
+      },
+    })
+  })
+}
+
+/** 中断当前回合。远程场景下没有这个按钮，用户只能干等。 */
+async function cancelRun(): Promise<void> {
+  haptic('heavy')
+  const link = currentLink()
+  if (link === undefined) return
+  try {
+    await link.call('session.cancel', { sessionId: sessionId.value })
+    sessionStatus.value = 'idle'
+  } catch (e) {
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '取消失败', icon: 'none' })
+  }
 }
 
 async function scrollToEnd(): Promise<void> {
@@ -104,19 +293,71 @@ function onSessionEvent(method: string, payload: unknown): void {
   const data = payload as Record<string, unknown> | undefined
   if (data === undefined) return
 
+  // 历史回放结束：宿主告诉我们已经推了多少条、还有没有更早的
+  if (method === 'session.history.end') {
+    loadingHistory.value = false
+    hasMoreHistory.value = data['hasMore'] === true
+    if (typeof data['cursor'] === 'number') oldestSeq.value = data['cursor']
+    if (data['error'] === true) errorText.value = '历史加载失败，下拉重试'
+    // 历史为空且没有新消息 → 明确告诉用户这是新会话
+    if (items.value.length === 0) sessionStatus.value = 'idle'
+    return
+  }
+
+  // 执行过程中的轮次边界即状态转换
+  if (method === 'session.trace') {
+    const kind = data['k']
+    if (kind === 'approval') sessionStatus.value = 'waiting'
+    else if (kind === 'tool' || kind === 'text') sessionStatus.value = 'running'
+    else if (kind === 'note' && data['text'] === '本轮结束') sessionStatus.value = 'done'
+    else if (kind === 'note' && data['text'] === '本轮失败') sessionStatus.value = 'error'
+    return
+  }
+
   if (method === 'session.stream') {
     const k = data['k']
+    // history=true 的帧是回放，不需要每来一条就滚动
+    const isHistory = data['history'] === true
     if (k === 'assist') {
       items.value.push({ k: 'assist', text: String(data['text'] ?? ''), at: nowLabel() })
     } else if (k === 'activity') {
+      /**
+       * 工具调用与结果合并成一行。
+       *
+       * 宿主对同一次工具会推两帧（tool/call 与 tool/result），都带 callId。
+       * 之前每帧各插一行，于是一次调用显示成两行，长会话里滚成"无数个 tool"。
+       * 现在按 callId 原地更新：
+       *   - 见到 call：插一行"进行中"
+       *   - 见到同 callId 的 result：更新那一行（补耗时与成功状态）
+       */
+      const phase = data['phase'] === 'result' ? 'result' : data['phase'] === 'call' ? 'call' : undefined
       const ms = typeof data['ms'] === 'number' ? `${String(data['ms'])}ms` : ''
-      items.value.push({
-        k: 'activity',
-        tool: String(data['tool'] ?? 'tool'),
-        summary: String(data['summary'] ?? ''),
-        ms,
-        ok: data['ok'] === false ? false : true,
-      })
+      const tool = String(data['tool'] ?? 'tool')
+      const summary = String(data['summary'] ?? '')
+      const ok = data['ok'] === false ? false : data['ok'] === true ? true : undefined
+
+      /**
+       * 合并规则（dsh 的 result 事件不带 callId，只能按 phase 判）：
+       *   phase === 'result' → 更新**最后一条** activity，不新增
+       *   其它               → 新增一行
+       *
+       * 这是"一次调用显示两行"的修复。之前 call 和 result 各插一行，
+       * 一条会话里几十次工具调用就滚成一片 "▸ tool"。
+       */
+      const last = items.value.length > 0 ? items.value[items.value.length - 1] : undefined
+
+      if (phase === 'result' && last !== undefined && last.k === 'activity') {
+        if (summary.length > 0) last.summary = summary
+        if (ms.length > 0) last.ms = ms
+        if (ok !== undefined) last.ok = ok
+        // 结果里若带有更准确的工具名，补上
+        if (tool.length > 0 && last.tool !== tool) last.tool = tool
+      } else if (phase === 'result') {
+        // 没有可合并的上一行（例如滚动到历史中段才断线重连）：仍然显示，但标为结果
+        items.value.push({ k: 'activity', tool, summary, ms, ok: ok ?? true })
+      } else {
+        items.value.push({ k: 'activity', tool, summary, ms, ok: ok ?? true })
+      }
     } else if (k === 'approval') {
       items.value.push({
         k: 'approval',
@@ -161,6 +402,8 @@ onLoad((q) => {
 
   // 订阅必须先注册再发 follow：否则宿主的头几帧会在监听器就位前丢掉
   setSessionListener(onSessionEvent)
+  // 订阅时宿主会立刻回放历史，期间显示骨架屏
+  loadingHistory.value = id !== ''
 
   const link = currentLink()
   if (link !== undefined && id !== '') {
@@ -188,20 +431,21 @@ onUnmounted(() => {
     <view class="grain" />
 
     <view class="top safe-top">
-      <view class="back" @tap="back">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-          <path d="M15 5l-7 7 7 7" />
-        </svg>
+      <!-- 返回箭头用 CSS 画：uni-app 的 App 端对内联 SVG 支持不稳定，
+           之前这里渲染成一片空白（用户看到"左上角有一块空白"）。 -->
+      <view class="back" @tap="back" hover-class="back-hover">
+        <view class="chev" />
       </view>
       <view class="top-mid">
         <text class="tt">{{ title }}</text>
         <view class="tsub">
-          <MossDot status="online" />
+          <!-- 状态点跟随真实状态，不再写死「运行中」——那是演示数据留下的假文案 -->
+          <MossDot :status="dotForStatus" />
           <text class="mono">{{ host }}</text>
-          <text class="t3">· 运行中</text>
+          <text class="t3">· {{ statusLabel }}</text>
         </view>
       </view>
-      <view class="more mono t3">···</view>
+      <view class="more mono t3" @tap="chatMenu">···</view>
     </view>
 
     <scroll-view class="flow" scroll-y :scroll-top="scrollTop" :scroll-with-animation="true">
@@ -258,18 +502,38 @@ onUnmounted(() => {
     </scroll-view>
 
     <view class="composer safe-bottom">
+      <!-- 模型选择：与 dsh 同步，改变后续回合用的模型 -->
+      <view class="modelbar">
+        <view class="model" @tap="pickModel">
+          <text class="mono">{{ modelLabel }}</text>
+          <view class="caret" />
+        </view>
+        <text v-if="queueCount > 0" class="queue mono t3">{{ queueCount }} 条排队</text>
+      </view>
+
       <view class="field">
         <view class="plus mono" @tap="haptic('light')">+</view>
         <input v-model="draft" class="in" placeholder="发指令…" placeholder-class="ph" @confirm="send" />
-        <!-- on 同时表达"有内容"与"没在发送中"：发送中再点会重复发消息 -->
+        <!--
+          运行中显示"停止"，空闲显示"发送"。
+          dsh 的 session.cancel 用来中断；不提供停止按钮时，
+          用户只能等 agent 自己跑完——远程场景下这非常难受。
+          图标改用 CSS 画：App 端内联 SVG 常不渲染（返回箭头踩过）。
+        -->
         <view
+          v-if="sessionStatus === 'running'"
+          class="send stop on"
+          @tap="cancelRun"
+        >
+          <view class="ico-stop" />
+        </view>
+        <view
+          v-else
           class="send"
           :class="{ on: draft.length > 0 && !sending, 'is-disabled': draft.length === 0 || sending }"
           @tap="send"
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <path d="M12 19V5M6 11l6-6 6 6" />
-          </svg>
+          <view class="ico-up" />
         </view>
       </view>
     </view>
@@ -286,8 +550,25 @@ onUnmounted(() => {
   background: linear-gradient(180deg, var(--bg) 60%, transparent);
 }
 
-.back { width: 34px; height: 34px; display: grid; place-items: center; color: var(--t2); }
-.back svg { width: 20px; height: 20px; }
+.back {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.back-hover { opacity: 0.6; }
+
+/* 左箭头：8×8 的方块，只留左边与下边，旋转 45° */
+.chev {
+  width: 9px;
+  height: 9px;
+  border-left: 2px solid var(--t2);
+  border-bottom: 2px solid var(--t2);
+  transform: rotate(45deg);
+  margin-left: 4px;
+}
 
 .top-mid { flex: 1; min-width: 0; }
 .tt {
@@ -370,6 +651,56 @@ onUnmounted(() => {
  * 这里只补左右与内距。输入框高度 44px：低于这个值点不到，
  * 高于这个值在 6.7 英寸屏上会挤掉一屏消息。
  */
+.modelbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 6px;
+}
+
+.model {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+  background: var(--s1);
+}
+
+.model text { font-size: 11px; color: var(--t2); }
+
+/* 小三角：App 端不依赖 SVG */
+.caret {
+  width: 0;
+  height: 0;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid var(--t3);
+}
+
+.queue { font-size: 10.5px; }
+
+/* 发送箭头：CSS 画的向上箭头 */
+.ico-up {
+  width: 10px;
+  height: 10px;
+  border-left: 2px solid currentColor;
+  border-top: 2px solid currentColor;
+  transform: rotate(45deg);
+  margin-top: 3px;
+}
+
+/* 停止方块 */
+.ico-stop {
+  width: 9px;
+  height: 9px;
+  border-radius: 1.5px;
+  background: currentColor;
+}
+
+.send.stop { color: var(--danger); border-color: var(--danger-bd); background: var(--danger-soft); }
+
 .composer {
   padding: 8px 12px;
   border-top: 1px solid var(--bd);

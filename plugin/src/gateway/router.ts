@@ -59,6 +59,8 @@ export interface RouteContext {
   /** 会话事件订阅表（follow 打开后由 server 推帧）。M1 可缺省。 */
   readonly subscriptions?: {
     open(sessionId: string, connId: string): boolean
+    /** 回放历史（订阅时立刻调用，否则对话页是空的）。 */
+    pushHistory?(sessionId: string, connId: string): Promise<{ pushed: number; hasMore: boolean }>
   }
   /** 待处理审批表（PC 触发、手机应答）。M1 可缺省。 */
   readonly approvals?: {
@@ -203,6 +205,17 @@ export function createHandlers(): GatewayHandlers {
 
     'device.list': async (rc) => ({ devices: rc.devices.list() }),
 
+    'device.rename': async (rc, p) => {
+      const deviceId = str(p, 'deviceId')
+      const label = str(p, 'label').trim()
+      if (label.length === 0 || label.length > 32) {
+        throw new RpcError('rpc/bad-args', '名称需为 1-32 个字符')
+      }
+      const done = await rc.devices.rename(deviceId, label)
+      if (!done) throw new RpcError('auth/revoked', '设备不存在或已撤销')
+      return { ok: true, deviceId, label }
+    },
+
     'device.revoke': async (rc, p) => {
       const deviceId = str(p, 'deviceId')
       const revoked = await rc.devices.revoke(deviceId)
@@ -217,14 +230,27 @@ export function createHandlers(): GatewayHandlers {
       const registry = rc.ctx.get<WorkspaceRegistry>('workspaceRegistry', false)
       const workspaces = registry?.list?.() ?? []
       return {
-        workspaces: workspaces.map((ws) => ({
-          id: String(ws.id),
-          name: ws.title,
-          path: ws.path,
-          pinned: false,
-          sessionCount: 0,
-          updatedAt: Date.parse(ws.createdAt) || Date.now(),
-        })),
+        workspaces: workspaces.map((ws) => {
+          /**
+           * 会话归属从 workspace 反查，不能指望 session 带上 workspaceId：
+           * dsh 的 SessionSummary 里没有这个字段，而 Workspace.sessionIds 是
+           * 权威来源（见 packages/workspace/workspace/src/types.ts）。
+           *
+           * sessionIds 之前没返回，导致 App 无法分组——这正是"会话页没有
+           * 工作区分组"的根因。
+           */
+          const ids = Array.isArray(ws.sessionIds) ? ws.sessionIds.map(String) : []
+          return {
+            id: String(ws.id),
+            name: ws.title,
+            path: ws.path,
+            pinned: false,
+            sessionCount: ids.length,
+            // 会话 id 列表：App 用它把 session.list 的结果归到各组
+            sessionIds: ids,
+            updatedAt: Date.parse(ws.createdAt) || Date.now(),
+          }
+        }),
       }
     },
     'workspace.create': notImplemented('workspace.create'),
@@ -243,7 +269,12 @@ export function createHandlers(): GatewayHandlers {
       timer.unref?.()
       try {
         const value = (await sessions.list({}, controller.signal)) as { items?: readonly HostSessionSummary[] }
-        return { sessions: toSessionSummaries(value?.items ?? [], workspaceId) }
+        const items = value?.items ?? []
+        // 临时诊断：把 dsh 返回的原始 summary 打出来，确认 title 到底在哪一层
+        if (items.length > 0) {
+          rc.ctx.logger?.info('[dsh-link] 原始 session summary: %s', JSON.stringify(items[0]))
+        }
+        return { sessions: toSessionSummaries(items, workspaceId) }
       } finally {
         clearTimeout(timer)
       }
@@ -303,6 +334,18 @@ export function createHandlers(): GatewayHandlers {
       const sessionId = str(p, 'sessionId')
       const opened = rc.subscriptions?.open(sessionId, meta.connId)
       if (opened === false) throw new RpcError('session/not-found', '会话不存在或无法订阅')
+
+      // 关键：订阅之后**立刻回放历史**。
+      // 只推新事件的话，用户进来看到的是空列表——那正是之前"对话页没历史"的原因。
+      // 不等它完成就返回：历史通过 evt 帧推送，RPC 只回一个通道名。
+      const history = rc.subscriptions?.pushHistory?.(sessionId, meta.connId)
+      if (history !== undefined) {
+        // 不 await：长会话的历史可能有几千条，阻塞 RPC 会让客户端以为卡住
+        void history.catch(() => {
+          // pushHistory 内部已处理错误并推送 session.history.end
+        })
+      }
+
       return { channel: `sess:${sessionId}`, sessionId }
     },
 
@@ -329,6 +372,81 @@ export function createHandlers(): GatewayHandlers {
     'session.queue.remove': notImplemented('session.queue.remove'),
     'session.queue.reorder': notImplemented('session.queue.reorder'),
     'session.queue.clear': notImplemented('session.queue.clear'),
+
+    // ── 模型选择 ──────────────────────────────────────────────────────────
+    'session.modelCatalog': async (rc) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+      /**
+       * 注意两个不同的类型，字段名不一样：
+       *   ModelSelection      = { provider, model, reasoningEffort? }
+       *   ModelProviderGroup  = { id, name, models[] }   ← 组用 id，不叫 provider
+       * 之前把组也读成 provider，于是 group.provider 全是空串。
+       */
+      const catalog = (await sessions.modelCatalog?.()) as {
+        default?: { provider?: string; model?: string }
+        groups?: readonly {
+          id?: string
+          name?: string
+          models?: readonly {
+            id: string
+            name: string
+            description?: string
+            /** 推理能力声明。结构随 provider adapter 而异，原样透传。 */
+            reasoning?: unknown
+          }[]
+        }[]
+        failures?: readonly { id?: string; name?: string; message?: string }[]
+      } | undefined
+      if (catalog === undefined) throw new RpcError('host/unavailable', '宿主不支持模型目录')
+
+      return {
+        default: {
+          provider: catalog.default?.provider ?? '',
+          model: catalog.default?.model ?? '',
+        },
+        // 摊平成 [provider, [model...]] 列表，App 端直接渲染
+        groups: (catalog.groups ?? []).map((g) => ({
+          provider: g.id ?? '',
+          name: g.name ?? g.id ?? '',
+          models: (g.models ?? []).map((m) => ({
+            id: m.id,
+            name: m.name,
+            ...(m.description === undefined ? {} : { description: m.description }),
+            // 原样透传：不同 adapter 的 reasoning 结构不一样，
+            // 这里不解读，只让 App 知道"这个模型支持推理"
+            ...(m.reasoning === undefined ? {} : { reasoning: m.reasoning }),
+          })),
+        })),
+        failures: (catalog.failures ?? []).map((f) => ({
+          name: f.name ?? f.id ?? '未知',
+          message: f.message ?? '',
+        })),
+      }
+    },
+
+    'session.selectModel': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions === undefined) throw new RpcError('host/unavailable', '宿主没有会话服务')
+      if (sessions.selectModel === undefined) throw new RpcError('host/unavailable', '宿主不支持选择模型')
+      const sessionId = str(p, 'sessionId')
+      const provider = str(p, 'provider')
+      const model = str(p, 'model')
+      try {
+        const value = (await sessions.selectModel({ sessionId, provider, model })) as {
+          selected?: { provider?: string; model?: string }
+        }
+        return {
+          ok: true,
+          selected: {
+            provider: value?.selected?.provider ?? provider,
+            model: value?.selected?.model ?? model,
+          },
+        }
+      } catch (error) {
+        throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
+      }
+    },
 
     // ── 会话管理 ──────────────────────────────────────────────────────────
     'session.rename': async (rc, p) => {

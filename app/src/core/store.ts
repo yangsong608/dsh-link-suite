@@ -44,6 +44,13 @@ export interface WorkspaceRow {
   path: string
   pinned?: boolean
   sessionCount?: number
+  /**
+   * 该工作区包含的会话 id。
+   *
+   * dsh 的 SessionSummary 不带 workspaceId，归属只能从 Workspace.sessionIds 反查
+   * （见 packages/workspace/workspace/src/types.ts）。少了它就无法按工作区分组。
+   */
+  sessionIds?: string[]
   updatedAt?: number
 }
 

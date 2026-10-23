@@ -46,6 +46,7 @@ export const METHODS = [
   'device.info',
   'device.list',
   'device.revoke',
+  'device.rename',
   'pair.start',
   'pair.finish',
 
@@ -63,6 +64,8 @@ export const METHODS = [
   // 会话
   'session.list',
   'session.prompt',
+  'session.modelCatalog',
+  'session.selectModel',
   'session.cancel',
   'session.follow',
   'approval.answer',

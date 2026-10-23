@@ -82,7 +82,17 @@ export interface SessionSummary {
 export type StreamItem =
   | { readonly k: 'user'; readonly text: string; readonly at: number }
   | { readonly k: 'assist'; readonly text: string; readonly at: number; readonly streaming?: boolean }
-  | { readonly k: 'activity'; readonly tool: string; readonly summary: string; readonly ms?: number; readonly ok?: boolean }
+  | {
+      readonly k: 'activity'
+      readonly tool: string
+      readonly summary: string
+      readonly ms?: number
+      readonly ok?: boolean
+      /** 与 TraceItem 的 callId 对应，用于把 result 合并回 call。 */
+      readonly callId?: string
+      /** call = 新增一行；result = 更新上一行。见 TraceItem 的 phase 说明。 */
+      readonly phase?: 'call' | 'result'
+    }
   | { readonly k: 'approval'; readonly id: string; readonly cmd: string; readonly risk?: string }
   | { readonly k: 'question'; readonly id: string; readonly q: string; readonly options: readonly string[]; readonly multi: boolean }
   | { readonly k: 'done'; readonly at: number; readonly ok: boolean }
@@ -114,6 +124,8 @@ interface TraceBase {
 
 export type TraceItem =
   | (TraceBase & { readonly k: 'think'; readonly summary: string; readonly ms?: number })
+  /** 用户自己发的消息。历史回放时必须包含，否则"我说过的话"会消失。 */
+  | (TraceBase & { readonly k: 'user'; readonly text: string })
   | (TraceBase & { readonly k: 'text'; readonly text: string; readonly streaming?: boolean })
   | (TraceBase & {
       readonly k: 'tool'
@@ -124,6 +136,20 @@ export type TraceItem =
       readonly output?: string
       readonly ms?: number
       readonly ok?: boolean
+      /**
+       * 工具调用 id。dsh 的 tool/result 事件不带这个字段，
+       * 所以真正用于合并的是 phase（见下）。
+       */
+      readonly callId?: string
+      /**
+       * 这一条是"开始"还是"结果"。
+       *
+       * dsh 把一次工具调用拆成两个事件（tool/call 与 tool/result），
+       * 而 result 不带 id，客户端无法配对。所以显式标出 phase：
+       * 客户端见到 phase='result' 就**更新上一行**，不再新增。
+       * 少了这个标记，一次调用会显示成两行，长会话里滚成"无数个 tool"。
+       */
+      readonly phase?: 'call' | 'result'
     })
   | (TraceBase & {
       readonly k: 'file'

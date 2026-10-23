@@ -129,13 +129,46 @@ export async function refreshAll(): Promise<{ ok: boolean; error?: string }> {
   try {
     const devices = await link.call<{ devices: DeviceCard[] }>('device.list')
     if (Array.isArray(devices?.devices)) {
-      // 保留本机缓存的 endpoint（宿主不下发连接地址，那是客户端的事）
-      const endpoints = new Map(state.devices.map((d) => [d.deviceId, d.endpoint]))
-      state.devices = devices.devices.map((d) => ({
-        ...d,
-        conn: 'online',
-        endpoint: endpoints.get(d.deviceId),
-      }))
+      /**
+       * 合并真实设备列表。
+       *
+       * 这里踩过一个很隐蔽的坑：之前是
+       *   state.devices = list.map(d => ({ ...d, endpoint: endpoints.get(d.deviceId) }))
+       * 而配对时建的临时设备 id 是 `tmp_xxx`，真实 id 是 `dev_xxx`——
+       * `endpoints.get()` 必然 undefined，临时设备又没被删掉，
+       * 结果就是**两条设备并存、都点不开**。
+       *
+       * 正确做法：
+       *   1. 以 deviceId 为键合并
+       *   2. 临时设备（tmp_*）一旦拿到真实设备就删除
+       *   3. endpoint 按 deviceId 精确匹配；匹配不到就按"当前连接用的那个"补
+       */
+      const old = new Map(state.devices.map((d) => [d.deviceId, d]))
+      const currentUrl = attached?.url
+
+      state.devices = devices.devices.map((d) => {
+        const prev = old.get(d.deviceId)
+        return {
+          ...d,
+          conn: 'online' as const,
+          // 优先用同一 deviceId 的旧 endpoint；否则若这是当前连接的那台，用当前地址
+          endpoint: prev?.endpoint ?? (currentUrl === undefined ? undefined : { url: currentUrl, kind: 'lan' as const }),
+          lock: prev?.lock,
+          runningCount: prev?.runningCount,
+          sessionCount: prev?.sessionCount,
+        }
+      })
+
+      // 真实列表里没有的临时设备 = 配对未完成或已失效，直接丢掉
+      const realIds = new Set(state.devices.map((d) => d.deviceId))
+      if (realIds.size > 0) {
+        state.devices = state.devices.filter((d) => !d.deviceId.startsWith('tmp_'))
+      }
+
+      // activeId 指向的临时设备没了，切到第一台真实设备
+      if (!state.devices.some((d) => d.deviceId === state.activeId)) {
+        state.activeId = state.devices[0]?.deviceId ?? ''
+      }
     }
 
     const workspaces = await link.call<{ workspaces: WorkspaceRow[] }>('workspace.list')
