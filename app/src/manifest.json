@@ -1,7 +1,7 @@
 {
-  "name": "DSH Link",
+  "name": "MOSS Link",
   "appid": "__UNI__C0CEB41",
-  "description": "管理并使用多台电脑上的 dsh",
+  "description": "MOSS Link：用手机管理并使用多台电脑上的 dsh",
   "versionName": "0.1.0",
   "versionCode": "100",
   "transformPx": false,
@@ -32,7 +32,30 @@
           "NSCameraUsageDescription": "扫描配对二维码"
         }
       },
-      "sdkConfigs": {}
+      "sdkConfigs": {},
+      "icons": {
+        "android": {
+          "hdpi": "resources/icons/icon-72.png",
+          "xhdpi": "resources/icons/icon-96.png",
+          "xxhdpi": "resources/icons/icon-144.png",
+          "xxxhdpi": "resources/icons/icon-192.png"
+        },
+        "ios": {
+          "appstore": "resources/icons/app-icon-1024.png",
+          "iphone": {
+            "app@2x": "resources/icons/icon-192.png",
+            "app@3x": "resources/icons/icon-192.png"
+          }
+        }
+      },
+      "splashscreen": {
+        "android": {
+          "hdpi": "resources/icons/icon-72.png",
+          "xhdpi": "resources/icons/icon-96.png",
+          "xxhdpi": "resources/icons/icon-144.png",
+          "xxxhdpi": "resources/icons/icon-192.png"
+        }
+      }
     },
     "statusbar": {
       "immersed": "supported",
@@ -60,7 +83,7 @@
     "darkmode": true
   },
   "h5": {
-    "title": "DSH Link",
+    "title": "MOSS Link",
     "router": {
       "mode": "hash",
       "base": "/"

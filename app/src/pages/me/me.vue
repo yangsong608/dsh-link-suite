@@ -57,7 +57,7 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 
 function about(): void {
   uni.showModal({
-    title: 'DSH Link 0.1.0',
+    title: 'MOSS LINK 0.1.0',
     content: '数据不经过任何服务器。\n锁屏挡住的是人，不是进程。',
     showCancel: false,
     confirmText: '知道了',
@@ -148,10 +148,19 @@ function about(): void {
       <view class="panel">
         <view class="opt" @tap="about">
           <view class="opt-body">
-            <text class="opt-n">DSH Link 0.1.0</text>
+            <text class="opt-n">MOSS LINK 0.1.0</text>
             <text class="opt-d t3">dsh-link · 宿主插件 0.1.0</text>
           </view>
           <text class="mono t3">›</text>
+        </view>
+
+        <!-- 品牌区：把 MOSS 主体放进来，让"关于"页有可识别的主体而不是纯文字 -->
+        <view class="brand-card">
+          <image class="brand-img" src="/static/moss/hero.webp" mode="aspectFit" />
+          <view class="brand-body">
+            <text class="brand-h mark mono">MOSS<span class="brand-acc">LINK</span></text>
+            <text class="brand-d t3">把 dsh 带到手机上</text>
+          </view>
         </view>
       </view>
 
@@ -163,6 +172,20 @@ function about(): void {
 </template>
 
 <style lang="scss" scoped>
+.brand-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 13px;
+  border-top: 1px solid var(--bd);
+}
+
+.brand-img { width: 64px; height: 64px; flex: none; }
+.brand-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.brand-h { font-size: 15px; font-weight: 700; letter-spacing: 1.6px; color: var(--t1); }
+.brand-acc { color: var(--acc); }
+.brand-d { font-size: 11.5px; }
+
 .head {
   display: flex;
   align-items: baseline;

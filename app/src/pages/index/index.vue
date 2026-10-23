@@ -11,6 +11,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import PageShell from '@/components/PageShell.vue'
 import MossTerm from '@/components/moss/MossTerm.vue'
 import MossBoot from '@/components/moss/MossBoot.vue'
+import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, activeDevice, skinClass, themeClass, liteClass, type DeviceCard } from '@/core/store'
 import { haptic } from '@/core/haptic'
 import { connectDevice, refreshAll } from '@/core/link'
@@ -24,6 +25,14 @@ import { connectDevice, refreshAll } from '@/core/link'
  */
 let bootPlayed = false
 const booting = ref(!bootPlayed)
+
+/**
+ * 是否有任何一台设备在干活。
+ *
+ * 取 runningCount 而不是 conn==='online'：角标的语义是"在干活"，
+ * 在线但空闲的机器不该亮红灯——那会让红灯变成常态，警示失效。
+ */
+const anyWorking = computed(() => state.devices.some((d) => (d.runningCount ?? 0) > 0))
 const refreshing = ref(false)
 
 const onlineCount = computed(() => state.devices.filter((d) => d.conn === 'online').length)
@@ -233,7 +242,8 @@ onLoad(() => {
 
     <view class="head safe-top">
       <view class="brand">
-        <text class="logo mono">DSH<text class="logo-acc">LINK</text></text>
+        <MossBadge :size="26" :working="anyWorking" :glow="!state.lite" />
+        <text class="logo mono">MOSS<text class="logo-acc">LINK</text></text>
         <text class="ver mono">v0.1.0</text>
       </view>
       <view class="actions">
@@ -405,7 +415,7 @@ onLoad(() => {
      覆盖掉 .head 上的 .safe-top（状态栏安全区）。 */
 }
 
-.brand { display: flex; align-items: baseline; gap: 8px; }
+.brand { display: flex; align-items: center; gap: 8px; }
 
 .logo {
   font-size: 19px;

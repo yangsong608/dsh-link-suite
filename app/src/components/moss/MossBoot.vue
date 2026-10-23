@@ -31,7 +31,7 @@ const visible = ref(0)
 const timers: ReturnType<typeof setTimeout>[] = []
 
 const lines = (): string[] => [
-  'DSH LINK v0.1.0',
+  'MOSS LINK v0.1.0',
   `SCANNING ${props.hostCount} HOST${props.hostCount === 1 ? '' : 'S'}`,
   props.lastName ? `TARGET ${props.lastName.toUpperCase()}` : 'TARGET —',
   'READY',
@@ -102,9 +102,11 @@ onBeforeUnmount(() => {
       </view>
     </view>
 
+    <!-- 真实的 MOSS 主体（预渲染图）。不用运行时 Three.js：
+         模型与引擎合计 1.7MB，而首包预算 400KB，见 tools/moss-render/README。 -->
     <view class="emblem-wrap">
       <view class="ring" />
-      <view class="mark mono">DSH</view>
+      <image class="moss-img" src="/static/moss/boot.webp" mode="aspectFit" />
     </view>
   </view>
 </template>
