@@ -35,6 +35,35 @@ type Item =
  */
 /** 宽屏（平板横屏/大屏）时启用三栏：会话列表 / 对话 / 产物。 */
 const wide = ref(false)
+
+/**
+ * 长会话的渲染窗口。
+ *
+ * 一个会话可能有几千条消息，全部渲染会让每次状态更新都重排整棵 DOM
+ * （手机上尤其明显：滚动卡、输入延迟）。这里只渲染最近 N 条，
+ * 往上翻时再按需放开。内存侧另有硬上限，超出就丢最老的。
+ */
+const RENDER_STEP = 150
+const MEMORY_CAP = 1500
+const renderLimit = ref(RENDER_STEP)
+
+const visibleItems = computed(() =>
+  items.value.length <= renderLimit.value ? items.value : items.value.slice(-renderLimit.value),
+)
+const hasMore = computed(() => items.value.length > renderLimit.value)
+
+function loadMore(): void {
+  haptic('light')
+  renderLimit.value += RENDER_STEP
+}
+
+/** 内存上限：只裁内存，不影响用户已看到的内容（窗口会跟着走）。 */
+function trimItems(): void {
+  if (items.value.length <= MEMORY_CAP) return
+  const drop = items.value.length - MEMORY_CAP
+  items.value.splice(0, drop)
+  renderLimit.value = Math.max(RENDER_STEP, renderLimit.value - drop)
+}
 /** 右栏是否展开。宽屏下也要能收起——产物面板占 300px，看长代码时很碍事。 */
 const rightOpen = ref(true)
 
@@ -715,6 +744,7 @@ async function send(): Promise<void> {
   errorText.value = ''
   const attachLabel = sending_attaches.length > 0 ? `（${String(sending_attaches.length)} 个附件）` : ''
   items.value.push({ k: 'user', text: text + attachLabel, at: nowLabel() })
+  trimItems()
   draft.value = ''
   attaches.value = []
   void scrollToEnd()
@@ -809,8 +839,10 @@ function onSessionEvent(method: string, payload: unknown): void {
     // 于是回看历史时"我说的话"全部消失，只剩 agent 的回复。
     if (k === 'user') {
       items.value.push({ k: 'user', text: String(data['text'] ?? ''), at: nowLabel() })
+        trimItems()
     } else if (k === 'assist') {
       items.value.push({ k: 'assist', text: String(data['text'] ?? ''), at: nowLabel() })
+        trimItems()
     } else if (k === 'activity') {
       /**
        * 工具调用与结果合并成一行。
@@ -846,8 +878,10 @@ function onSessionEvent(method: string, payload: unknown): void {
       } else if (phase === 'result') {
         // 没有可合并的上一行（例如滚动到历史中段才断线重连）：仍然显示，但标为结果
         items.value.push({ k: 'activity', tool, summary, ms, ok: ok ?? true })
+        trimItems()
       } else {
         items.value.push({ k: 'activity', tool, summary, ms, ok: ok ?? true })
+        trimItems()
       }
     } else if (k === 'approval') {
       items.value.push({
@@ -1010,7 +1044,10 @@ onUnmounted(() => {
     <scroll-view v-if="tab === 'chat'" class="flow" scroll-y :scroll-top="scrollTop" :scroll-with-animation="true">
       <view class="daystamp mono">2026-10-23</view>
 
-      <template v-for="(it, i) in items" :key="i">
+      <view v-if="hasMore" class="more-row" @tap="loadMore">
+        <text class="more-t">载入更早的消息（还有 {{ items.length - renderLimit }} 条）</text>
+      </view>
+      <template v-for="(it, i) in visibleItems" :key="i">
         <!-- 用户：右对齐，唯一有底色的东西 -->
         <view v-if="it.k === 'user'" class="me">
           <view class="me-b"><MossMarkdown :text="it.text" /></view>
@@ -1744,6 +1781,16 @@ onUnmounted(() => {
 .queue-acts { flex: none; display: flex; gap: 10px; }
 .qact { font-size: 11.5px; color: var(--acc); }
 .qact.danger { color: var(--danger); }
+
+.more-row {
+  margin: 12px 0;
+  padding: 9px 12px;
+  text-align: center;
+  border-radius: 8px;
+  border: 1px dashed var(--bd);
+}
+
+.more-t { font-size: 11.5px; color: var(--t3); }
 
 .browse-row {
   display: flex;

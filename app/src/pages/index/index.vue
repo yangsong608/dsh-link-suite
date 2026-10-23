@@ -15,7 +15,7 @@ import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
 import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, activeDevice, skinClass, themeClass, liteClass, type DeviceCard } from '@/core/store'
 import { haptic } from '@/core/haptic'
-import { connectDevice, disconnect, refreshAll, currentLink } from '@/core/link'
+import { connectDevice, disconnectManual, refreshAll, currentLink } from '@/core/link'
 import { decodePairUri } from '@dsh-link/protocol'
 
 /**
@@ -325,7 +325,7 @@ function deviceMenu(d: DeviceCard): void {
     onSelect: (i) => {
       if (i === 0) void renameDevice(d)
       else if (i === 1) void showDeviceDetail(d)
-      else if (i === 2) disconnectDevice(d)
+      else if (i === 2) disconnectManualDevice(d)
       else if (i === 3) void removeDevice(d)
     },
   })
@@ -382,8 +382,9 @@ function statusText(s: ReturnType<typeof statusOf>): string {
   }
 }
 
-function disconnectDevice(d: DeviceCard): void {
-  disconnect()
+function disconnectManualDevice(d: DeviceCard): void {
+  // 走 manual 版本：置标记，避免刚断开又被自动重连回来
+  disconnectManual()
   const idx = state.devices.findIndex((x) => x.deviceId === d.deviceId)
   if (idx >= 0) {
     const cur = state.devices[idx]
@@ -406,6 +407,13 @@ async function removeDevice(d: DeviceCard): Promise<void> {
           try { await link.call('device.revoke', { deviceId: d.deviceId }) } catch { /* 撤销失败也允许本地移除 */ }
         }
         state.devices = state.devices.filter((x) => x.deviceId !== d.deviceId)
+        /*
+         * 会话要跟着设备一起消失。
+         *
+         * 之前只删设备、不清会话：用户移除了一台电脑，会话页里那台机器的
+         * 会话还挂着，点进去必然连不上。会话的归属是设备，不是全局。
+         */
+        state.sessions = state.sessions.filter((x) => (x.hostId ?? state.activeId) !== d.deviceId)
         if (state.activeId === d.deviceId) state.activeId = state.devices[0]?.deviceId ?? ''
         haptic('heavy')
         uni.showToast({ title: '已移除', icon: 'none' })

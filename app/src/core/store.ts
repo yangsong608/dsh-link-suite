@@ -34,6 +34,8 @@ export interface DeviceCard extends DeviceInfo {
 /** 会话行（列表页用；字段与协议 SessionSummary 对齐）。 */
 export interface SessionRow {
   id: string
+  /** 会话归属的设备。移除设备时用它清掉残留会话。 */
+  hostId?: string
   workspaceId: string
   title: string
   status: 'idle' | 'running' | 'waiting-approval' | 'waiting-input' | 'done' | 'error'

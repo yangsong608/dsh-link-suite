@@ -52,6 +52,31 @@ export function connectionStatus(): LinkStatus {
  *    但用户主动点「配对」就是想连——离线只是上一次的观测结果，
  *    不该让它阻止一次新的尝试。
  */
+/** 用户主动断开标记：主动断开后不允许自动重连。 */
+let manualClose = false
+let retry = 0
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+function scheduleReconnect(device: DeviceCard): void {
+  if (retryTimer !== undefined) return
+  const delay = Math.min(30_000, 1000 * 2 ** retry)
+  retry += 1
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined
+    // 期间可能已经换了设备或用户手动断开
+    if (manualClose || state.activeId !== device.deviceId) return
+    connectDevice(device)
+  }, delay)
+}
+
+/** 手动断开：置标记并清掉待执行的重连。 */
+export function disconnectManual(): void {
+  manualClose = true
+  retry = 0
+  if (retryTimer !== undefined) { clearTimeout(retryTimer); retryTimer = undefined }
+  disconnect()
+}
+
 export function connectDevice(device: DeviceCard): Link | undefined {
   const nextUrl = device.endpoint?.url
   if (attached !== undefined) {
@@ -78,6 +103,9 @@ export function connectDevice(device: DeviceCard): Link | undefined {
     // 存储不可用：当作没有令牌，用户需要重新配对
   }
 
+  // 用户主动连接（含点"重新连接"）→ 恢复自动重连
+  manualClose = false
+
   const link = new Link({
     url,
     kind: device.endpoint?.kind ?? 'lan',
@@ -89,6 +117,21 @@ export function connectDevice(device: DeviceCard): Link | undefined {
     const conn: DeviceCard['conn'] =
       status === 'online' ? 'online' : status === 'connecting' ? 'connecting' : status === 'needs-auth' ? 'needs-auth' : 'offline'
     updateDevice(device.deviceId, { conn })
+
+    /*
+     * 断线自动重连。
+     *
+     * 之前状态只是显示，掉线后就永久停在"离线"——手机锁屏、切后台、
+     * Wi-Fi 换蜂窝，任何一次都会让用户以为"这个 App 连不上"。
+     *
+     * 退避：1s → 2s → 4s → 8s → 16s → 30s 封顶。
+     * 只在**用户没有主动断开**且仍是当前设备时重试，避免手动断开后又自己连回来。
+     */
+    if (status === 'offline' && !manualClose) scheduleReconnect(device)
+    if (status === 'online') {
+      retry = 0
+      if (retryTimer !== undefined) { clearTimeout(retryTimer); retryTimer = undefined }
+    }
   })
 
   // 会话事件：统一入口，按方法名分发给当前注册的监听器。
@@ -205,7 +248,9 @@ export async function refreshAll(): Promise<{ ok: boolean; error?: string }> {
     state.workspaces = Array.isArray(workspaces?.workspaces) ? workspaces.workspaces : []
 
     const sessions = await link.call<{ sessions: SessionRow[] }>('session.list')
-    state.sessions = Array.isArray(sessions?.sessions) ? sessions.sessions : []
+    // 打上归属设备：移除设备时要按它清会话
+    const hostId = attached?.deviceId ?? state.activeId
+    state.sessions = (Array.isArray(sessions?.sessions) ? sessions.sessions : []).map((x) => ({ ...x, hostId }))
 
     state.waiting = state.sessions.filter((s) => s.status === 'waiting-approval').length +
       state.sessions.filter((s) => s.status === 'waiting-input').length
