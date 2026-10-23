@@ -182,6 +182,15 @@ function close(): void {
         <view v-if="file.truncated" class="hint t3">文件较大，仅显示前 20 万字符</view>
       </scroll-view>
 
+      <!-- CSV：表格预览（首行当表头） -->
+      <scroll-view v-else-if="csv !== undefined" class="body" scroll-x>
+        <view class="tbl">
+          <view v-for="(row, ri) in csv" :key="ri" class="tr" :class="{ th: ri === 0 }">
+            <text v-for="(cell, ci) in row" :key="ci" class="td mono">{{ cell }}</text>
+          </view>
+        </view>
+      </scroll-view>
+
       <!-- 代码 / 纯文本：行号 + 等宽，横向滚动保留缩进 -->
       <scroll-view v-else-if="file?.kind === 'text'" class="body code-body" scroll-x>
         <view class="code-lines">
