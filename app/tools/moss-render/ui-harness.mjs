@@ -279,7 +279,8 @@ function toStream(ev, seq, isHistory) {
         case 'fs.upload': return reply({ receiptId: 'rcpt_mock_1', name: 'mock.txt', bytes: 1024, file: null })
         case 'cost.summary': return reply({
           available: true,
-          session: { total: { amount: 0.4231, currency: 'USD' } },
+          // 真实结构（实测自宿主）：own.cost / own.costCny
+          session: { own: { cost: 4.8052, costCny: 34.27, calls: 1481 }, subagentCount: 0, found: true },
           peak: { peak: true, weekend: false, msUntilSwitch: 2 * 3600 * 1000, next: 'offPeak' },
         })
         case 'session.diff': return reply(window.__MOCK__.hunks)
