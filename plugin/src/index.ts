@@ -225,7 +225,15 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
       // 绑 0.0.0.0 时必须给出"允许哪些本机地址被连"的白名单，
       // 否则监听会落到 VPN / 公网网卡上。loopback 模式不需要白名单。
       const allowedLocal = cfg.gateway.bind === 'loopback' ? undefined : lanAddresses()
-      gateway = await startGateway({
+      /*
+       * 端口被占用时重试几次。
+       *
+       * 真实场景：用户重启 DSH 时旧进程可能还占着 7443 一小会儿，
+       * 新实例 bind 直接 EADDRINUSE → 网关静默降级（HTTP 面正常、
+       * WebSocket 端口不通），表现就是"App 连不上了，但设置页还打得开"。
+       * 这种几百毫秒的窗口值得等，而不是把远程访问整个小时都废掉。
+       */
+      gateway = await startGatewayWithRetry({
         rc,
         handlers: createHandlers(),
         port: cfg.gateway.port,
@@ -233,7 +241,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
         heartbeatMs: cfg.gateway.heartbeatMs,
         allowedOrigins: cfg.gateway.allowedOrigins,
         allowedLocalAddresses: allowedLocal,
-      })
+      }, ctx)
       // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
       ctx.on('dsh-link/lock-changed', (state) => {
         gateway?.broadcast('lock.changed', state as LockState)
@@ -606,4 +614,33 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   if (chunks.length === 0) return {}
   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
   return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {}
+}
+
+/**
+ * 启动网关，EADDRINUSE 时退避重试。
+ *
+ * 只对"端口被占用"重试：其它错误（权限、网卡异常）重试也没用，
+ * 立刻交给调用方降级并打日志。
+ */
+async function startGatewayWithRetry(
+  opts: Parameters<typeof startGateway>[0],
+  ctx: { logger?: { warn?: (msg: string, ...args: unknown[]) => void } },
+): Promise<Gateway> {
+  const attempts = 6
+  let lastError: unknown
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await startGateway(opts)
+    } catch (error) {
+      lastError = error
+      const code = (error as { code?: string } | undefined)?.code
+      if (code !== 'EADDRINUSE') throw error
+      if (i < attempts - 1) {
+        // 300ms 起，逐次 +200ms：给上一个进程释放端口的时间
+        await new Promise((resolve) => setTimeout(resolve, 300 + i * 200))
+      }
+    }
+  }
+  ctx.logger?.warn?.('[dsh-link] 端口一直被占用，重试 %d 次后放弃', attempts)
+  throw lastError
 }
