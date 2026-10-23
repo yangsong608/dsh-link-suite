@@ -37,8 +37,16 @@ export const inject: string[] = []
 
 const LINK_DIR = join(homedir(), '.dsh', 'dsh-link')
 
-/** 取本机局域网 IPv4：跳过回环与 IPv6 链路本地。绑 0.0.0.0 是被 dsh 明确拒绝的做法。 */
-function lanAddress(): string | undefined {
+/**
+ * 取本机全部非回环 IPv4。
+ *
+ * 为什么返回**列表**而不是一个地址：这台开发机就有 en0 与 en6 两块网卡
+ * 在同一网段（172.80.2.0/24），默认路由走 en6。只挑一个地址绑定，手机会
+ * 连不上那块网卡——而"手机走哪块网卡"取决于路由，宿主猜不出来。
+ *
+ * 所以：全部绑定。多监听几个地址的成本可以忽略，连不上的风险不能忽略。
+ */
+function lanAddresses(): string[] {
   const ifaces = networkInterfaces()
   const candidates: string[] = []
   for (const list of Object.values(ifaces)) {
@@ -47,9 +55,8 @@ function lanAddress(): string | undefined {
       candidates.push(info.address)
     }
   }
-  // 优先常见私网段，避免选到虚拟网卡（docker0 / vmnet / utun）
-  const prefer = candidates.find((ip) => /^192\.168\./.test(ip)) ?? candidates.find((ip) => /^10\./.test(ip))
-  return prefer ?? candidates[0]
+  // 去重并排序，让日志可读、让"同一次启动的绑定顺序"稳定
+  return [...new Set(candidates)].sort()
 }
 
 async function ensureHostId(): Promise<string> {
@@ -138,7 +145,10 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
 
   if (cfg.gateway.enabled) {
     try {
-      const host = bindHost(cfg.gateway.bind, lanAddress())
+      const host = bindHost(cfg.gateway.bind)
+      // 绑 0.0.0.0 时必须给出"允许哪些本机地址被连"的白名单，
+      // 否则监听会落到 VPN / 公网网卡上。loopback 模式不需要白名单。
+      const allowedLocal = cfg.gateway.bind === 'loopback' ? undefined : lanAddresses()
       gateway = await startGateway({
         rc,
         handlers: createHandlers(),
@@ -146,6 +156,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
         host,
         heartbeatMs: cfg.gateway.heartbeatMs,
         allowedOrigins: cfg.gateway.allowedOrigins,
+        allowedLocalAddresses: allowedLocal,
       })
       // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
       ctx.on('dsh-link/lock-changed', (state) => {

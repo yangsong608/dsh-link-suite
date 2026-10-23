@@ -251,7 +251,8 @@ export function normalizeConfig(raw: unknown): LinkConfig {
     enabled: asBool(root['enabled'], 'enabled', base.enabled),
     gateway: {
       enabled: asBool(gw['enabled'], 'gateway.enabled', base.gateway.enabled),
-      port: asInt(gw['port'], 'gateway.port', base.gateway.port, 1024, 65535),
+      // 0 表示"由系统分配随机端口"：测试与容器里都需要，也避免默认端口被占用时直接失败。
+      port: asInt(gw['port'], 'gateway.port', base.gateway.port, 0, 65535),
       bind,
       via,
       ...(relayUrl === undefined ? {} : { relayUrl }),
@@ -323,12 +324,19 @@ export function normalizeConfig(raw: unknown): LinkConfig {
 }
 
 /** 监听地址：'lan' 也要落到具体网卡 IP —— dsh 本人拒绝 0.0.0.0（见技术方案 §5.1）。 */
-export function bindHost(bind: BindMode, lanAddress: string | undefined): string {
-  if (bind === 'loopback') return '127.0.0.1'
-  if (lanAddress === undefined) {
-    throw new ConfigError('gateway.bind', '在 lan 模式下需要能取到本机局域网地址', bind)
-  }
-  return lanAddress
+/**
+ * 监听地址。
+ *
+ * lan 模式绑定 `0.0.0.0`，再用 localAddress 白名单在 upgrade 阶段挡掉不该接受
+ * 的来源。这一个选择同时解决三件事：
+ *   1. 多网卡：这台机器 en0/en6 同网段但默认路由在 en6，只绑一个地址必然有人连不上
+ *   2. IP 变化：DHCP 换地址后不需要重启插件
+ *   3. 公网/虚拟网卡暴露：白名单在每次建连时重算，VPN、docker、公网地址都被拒
+ *
+ * 约束是"白名单必须真的执行"——见 gateway/server.ts 的 upgrade 处理。
+ */
+export function bindHost(bind: BindMode): string {
+  return bind === 'loopback' ? '127.0.0.1' : '0.0.0.0'
 }
 
 export { ConfigError }

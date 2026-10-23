@@ -47,7 +47,9 @@ const EXEMPT = (role: DeviceRole): MethodPolicy => ({ role, tier: 'read', lockEx
 export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   // 连接与设备
   'device.info': EXEMPT('viewer'),
-  'device.list': P('admin'),
+  // 已配对设备都能看"我连的是哪台机器"——这不是管理操作，是基本的自我认知。
+  // 只有撤销（踢掉别的设备）才需要 admin。
+  'device.list': P('viewer'),
   'device.revoke': P('admin', 'unlocked'),
   // 配对**不是**豁免方法：锁定时允许配对，等于把门锁上却在锁上装了个新锁孔。
   // 人在电脑前才配对新设备，所以要求 unlocked 不会挡正常流程。
