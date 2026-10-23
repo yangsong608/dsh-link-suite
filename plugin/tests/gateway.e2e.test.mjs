@@ -44,7 +44,8 @@ function fakeCtx() {
 async function harness(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-link-e2e-'))
   const ctx = fakeCtx()
-  const cfg = normalizeConfig({ gateway: { bind: 'loopback', port: 0, ...overrides } })
+  // 锁默认关闭；e2e 需要锁定场景时显式打开
+  const cfg = normalizeConfig({ gateway: { bind: 'loopback', port: 0, ...overrides }, lock: { enabled: true } })
   const lock = new LockService(ctx, cfg, { store: join(dir, 'lock.json'), audit: join(dir, 'a.jsonl') })
   await lock.init()
   const devices = new DeviceRegistry(join(dir, 'devices.json'))

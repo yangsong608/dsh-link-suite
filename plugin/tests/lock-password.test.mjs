@@ -42,7 +42,8 @@ function fakeCtx() {
 
 async function withService(fn, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-link-pw-'))
-  const cfg = normalizeConfig({ lock: overrides })
+  // 锁默认关闭，测试显式打开
+  const cfg = normalizeConfig({ lock: { enabled: true, ...overrides } })
   const ctx = fakeCtx()
   const lock = new LockService(ctx, cfg, {
     store: join(dir, 'lock.json'),
