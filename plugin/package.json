@@ -58,7 +58,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node tests/manifest.test.mjs && node tests/lock.test.mjs && node tests/lock-password.test.mjs",
+    "test": "npm run build && node tests/manifest.test.mjs && node tests/lock.test.mjs && node tests/lock-password.test.mjs && node tests/devices.test.mjs && node tests/limits.test.mjs",
     "clean": "rm -rf lib"
   }
 }

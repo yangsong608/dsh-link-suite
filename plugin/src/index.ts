@@ -21,7 +21,8 @@ import type { LockState } from '@dsh-link/protocol'
 import { bindHost, normalizeConfig, type LinkConfig } from './config.js'
 import type { DshContext, WebServerService } from './dsh.js'
 import { LockService } from './lock/index.js'
-import { createHandlers } from './gateway/router.js'
+import { DeviceRegistry } from './gateway/devices.js'
+import { createHandlers, type RouteContext } from './gateway/router.js'
 import { startGateway, type Gateway } from './gateway/server.js'
 
 export const name = 'dsh-link'
@@ -85,23 +86,49 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
   })
   await lock.init()
 
+  // ── 设备表 ──────────────────────────────────────────────────────────────
+  // 先于网关创建：handlers 需要它，而配对是网关能不能用的前提。
+  const devices = new DeviceRegistry(join(LINK_DIR, 'devices.json'))
+  await devices.load()
+
   // ── 网关 ────────────────────────────────────────────────────────────────
   let gateway: Gateway | undefined
-  const rc = { ctx, cfg, lock, hostId, dshVersion }
+  const rc: RouteContext = {
+    ctx,
+    cfg,
+    lock,
+    devices,
+    hostId,
+    dshVersion,
+    // 晚绑定：网关需要 handlers，handlers 又需要网关（pair.finish 要升格连接）。
+    gateway: () => gateway,
+  }
 
   if (cfg.gateway.enabled) {
-    const host = bindHost(cfg.gateway.bind, lanAddress())
-    gateway = await startGateway({
-      rc,
-      handlers: createHandlers(),
-      port: cfg.gateway.port,
-      host,
-      heartbeatMs: cfg.gateway.heartbeatMs,
-    })
-    // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
-    ctx.on('dsh-link/lock-changed', (state) => {
-      gateway?.broadcast('lock.changed', state as LockState)
-    })
+    try {
+      const host = bindHost(cfg.gateway.bind, lanAddress())
+      gateway = await startGateway({
+        rc,
+        handlers: createHandlers(),
+        port: cfg.gateway.port,
+        host,
+        heartbeatMs: cfg.gateway.heartbeatMs,
+        allowedOrigins: cfg.gateway.allowedOrigins,
+      })
+      // 锁状态一变，立刻推给所有在线设备（App 不用轮询）
+      ctx.on('dsh-link/lock-changed', (state) => {
+        gateway?.broadcast('lock.changed', state as LockState)
+      })
+    } catch (error) {
+      // 端口占用、网卡取不到、权限不足——这些都是"远程访问不可用"，
+      // 不是"锁屏不可用"。原来没有 try/catch，一个可选子系统的失败
+      // 会把整个插件（包括与端口无关的锁屏）一起拖死。
+      ctx.logger?.error(
+        '[dsh-link] 网关启动失败，远程访问已降级（锁屏不受影响）：%s',
+        error instanceof Error ? error.message : String(error),
+      )
+      gateway = undefined
+    }
   }
 
   // ── 本机 HTTP 面（给浏览器里的锁屏层用）─────────────────────────────────
@@ -110,7 +137,7 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
     const off = webServer.register({
       kind: 'prefix',
       path: '/dsh-link',
-      handler: makeHttpHandler(lock, gateway),
+      handler: makeHttpHandler(lock, gateway, devices, cfg, hostId),
     })
     ctx.effect(() => () => off(), 'dsh-link: http routes')
   }
@@ -137,7 +164,13 @@ export async function apply(ctx: DshContext, rawConfig: unknown): Promise<void> 
  * 注意这是 best-effort：反代会改写 remoteAddress，真正可靠的做法是让 dsh 的
  * connection 层来鉴权（本插件不碰那一层，见 docs/06 §3）。
  */
-function makeHttpHandler(lock: LockService, gateway: Gateway | undefined) {
+function makeHttpHandler(
+  lock: LockService,
+  gateway: Gateway | undefined,
+  devices: DeviceRegistry,
+  cfg: LinkConfig,
+  hostId: string,
+) {
   return async (rawReq: unknown, rawRes: unknown): Promise<void> => {
     const req = rawReq as IncomingMessage
     const res = rawRes as ServerResponse
@@ -258,6 +291,61 @@ function makeHttpHandler(lock: LockService, gateway: Gateway | undefined) {
       // PC 侧轮询待确认的远程解锁请求（浏览器半据此弹确认窗）。
       if (url.pathname === '/dsh-link/lock/pending' && req.method === 'GET') {
         json(200, { pending: lock.pendingRequests() })
+        return
+      }
+
+      // ── 配对（PC 侧）────────────────────────────────────────────────────
+      // 用户必须在电脑前确认，手机才有码可输。这与安全模型同向：
+      // 配对码只是"谁先拿到"的凭据，真正的授权动作是这里的 approve。
+      if (url.pathname === '/dsh-link/pair/start' && req.method === 'POST') {
+        const session = devices?.startPair(cfg.gateway.pairTtlMs)
+        if (session === undefined) {
+          json(503, { error: '设备表未就绪' })
+          return
+        }
+        json(200, {
+          code: session.code,
+          expiresAt: session.expiresAt,
+          hostId,
+        })
+        return
+      }
+
+      if (url.pathname === '/dsh-link/pair/approve' && req.method === 'POST') {
+        const body = await readJson(req)
+        const code = String(body['code'] ?? '')
+        const ok = devices?.approvePair(code) ?? false
+        json(ok ? 200 : 404, ok ? { approved: true, code } : { error: '配对码不存在或已过期' })
+        return
+      }
+
+      if (url.pathname === '/dsh-link/pair/pending' && req.method === 'GET') {
+        json(200, {
+          pending: (devices?.pendingPairs() ?? []).map((s) => ({
+            code: s.code,
+            createdAt: s.createdAt,
+            expiresAt: s.expiresAt,
+            approved: s.approved,
+          })),
+        })
+        return
+      }
+
+      if (url.pathname === '/dsh-link/pair/devices' && req.method === 'GET') {
+        json(200, { devices: devices?.list() ?? [] })
+        return
+      }
+
+      if (url.pathname === '/dsh-link/pair/revoke' && req.method === 'POST') {
+        const body = await readJson(req)
+        const deviceId = String(body['deviceId'] ?? '')
+        const revoked = (await devices?.revoke(deviceId)) ?? undefined
+        if (revoked === undefined) {
+          json(404, { error: '设备不存在' })
+          return
+        }
+        gateway?.disconnectDevice(revoked)
+        json(200, { revoked, deviceId: revoked })
         return
       }
 

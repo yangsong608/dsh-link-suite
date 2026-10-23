@@ -8,10 +8,11 @@
  * 严格代理下直接 `ctx.sessionController` 会抛错，即使服务不存在也一样。
  */
 
-import { RpcError, DEFAULT_CAPS, METHOD_POLICY, type Method } from '@dsh-link/protocol'
+import { RpcError, DEFAULT_CAPS, METHOD_POLICY, type DeviceRole, type Method } from '@dsh-link/protocol'
 import type { DshContext, SessionController, PluginManager } from '../dsh.js'
 import type { LinkConfig } from '../config.js'
 import type { LockService } from '../lock/index.js'
+import type { DeviceRegistry } from './devices.js'
 
 export interface CallMeta {
   readonly deviceId: string
@@ -19,6 +20,8 @@ export interface CallMeta {
   readonly label?: string
   readonly role: keyof typeof ROLE_ORDER
   readonly remoteAddress: string
+  /** 当前连接 id，pair.finish 用它把连接升格为已认证。 */
+  readonly connId: string
 }
 
 export const ROLE_ORDER = { viewer: 0, operator: 1, approver: 2, admin: 3 } as const
@@ -27,8 +30,20 @@ export interface RouteContext {
   readonly ctx: DshContext
   readonly cfg: LinkConfig
   readonly lock: LockService
+  readonly devices: DeviceRegistry
   readonly hostId: string
   readonly dshVersion: string
+  /**
+   * 网关自身的引用。只在 plugin apply() 里晚绑定一次：
+   * gateway 需要 handlers，handlers 又需要 gateway（pair.finish 要升格连接），
+   * 用 getter 打破这个循环，而不是引入可变全局。
+   */
+  readonly gateway: () =>
+    | {
+        authenticate(connId: string, deviceId: string, role: DeviceRole, label: string): boolean
+        disconnectDevice(deviceId: string): number
+      }
+    | undefined
 }
 
 export type Handler = (rc: RouteContext, params: Record<string, unknown>, meta: CallMeta) => Promise<unknown>
@@ -100,11 +115,66 @@ export function createHandlers(): GatewayHandlers {
       return rc.lock.get()
     },
 
-    // ── M1 待实现：连接与工作区骨架 ───────────────────────────────────────
-    'pair.start': notImplemented('pair.start'),
-    'pair.finish': notImplemented('pair.finish'),
-    'device.list': notImplemented('device.list'),
-    'device.revoke': notImplemented('device.revoke'),
+    // ── 配对与设备 ────────────────────────────────────────────────────────
+    // pair.* 是预认证方法：未配对设备也要能调，否则配对流程死锁。
+    'pair.start': async (rc) => {
+      const session = rc.devices.startPair(rc.cfg.gateway.pairTtlMs)
+      rc.ctx.logger?.info('[dsh-link] 待配对：%s（%ds 内有效）', session.code, Math.round(rc.cfg.gateway.pairTtlMs / 1000))
+      return {
+        code: session.code,
+        expiresAt: session.expiresAt,
+        hostId: rc.hostId,
+        // 指纹给用户比对"这台机器确实是它"，不做信任决策
+        fingerprint: rc.hostId.slice(-6),
+        // 码本身必须由人在 PC 上确认，这里明确告诉客户端下一步
+        next: 'ask-owner',
+      }
+    },
+
+    'pair.finish': async (rc, p, meta) => {
+      const code = str(p, 'code')
+      const label = typeof p['label'] === 'string' && p['label'].length > 0 ? p['label'] : '未命名设备'
+      const platform = typeof p['platform'] === 'string' && p['platform'].length > 0 ? p['platform'] : 'unknown'
+
+      const outcome = await rc.devices.finishPair({ code, label, platform })
+      if (!outcome.ok) {
+        const codeMap = {
+          'unknown-code': 'auth/need-pair',
+          expired: 'auth/expired',
+          'not-approved': 'auth/forbidden',
+          consumed: 'auth/expired',
+        } as const
+        const message = {
+          'unknown-code': '配对码不存在',
+          expired: '配对码已过期，请在电脑上重新生成',
+          'not-approved': '这台电脑还没有确认配对',
+          consumed: '配对码已被使用',
+        }[outcome.reason]
+        throw new RpcError(codeMap[outcome.reason], message)
+      }
+
+      const { device, token } = outcome.result
+      // 关键一步：把当前连接升格为已认证。没有这句，设备拿到了令牌
+      // 却仍然每条调用都被 auth/need-pair 拒掉。
+      const upgraded = rc.gateway()?.authenticate(meta.connId, device.deviceId, device.role, device.label) ?? false
+      if (!upgraded) throw new RpcError('host/internal', '连接已断开，请重试配对')
+
+      rc.devices.list() // 触发一次读取，确保记录已可查
+      return { deviceId: device.deviceId, role: device.role, label: device.label, token }
+    },
+
+    'device.list': async (rc) => ({ devices: rc.devices.list() }),
+
+    'device.revoke': async (rc, p) => {
+      const deviceId = str(p, 'deviceId')
+      const revoked = await rc.devices.revoke(deviceId)
+      if (revoked === undefined) throw new RpcError('auth/revoked', '设备不存在或已撤销')
+      // 表里删了但 socket 还活着等于没撤销：必须把在线连接一并断掉
+      rc.gateway()?.disconnectDevice(deviceId)
+      return { revoked: true, deviceId }
+    },
+
+    // ── 工作区 ────────────────────────────────────────────────────────────
     'workspace.list': notImplemented('workspace.list'),
     'workspace.create': notImplemented('workspace.create'),
     'dir.list': notImplemented('dir.list'),

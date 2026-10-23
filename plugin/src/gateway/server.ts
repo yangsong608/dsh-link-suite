@@ -1,12 +1,15 @@
 /**
  * 网关：WSS 服务 + 连接管理 + 分发。
  *
- * 本版只做**可跑通的骨架**：
+ * 状态（M0 之后）：
  *   ✅ 帧收发、guard（锁屏与角色）、错误映射、心跳、断开清理、事件广播
- *   ⬜ 加密握手（E2E）：留 `seal/open` 接口，见 docs/02 §4.4
- *   ⬜ 设备身份认证：目前按"未认证 viewer"处理，见 docs/02 §3.1
+ *   ✅ 设备令牌认证（pair.finish 拿到的 bearer token，sha256 建索引）
+ *   ✅ 预认证白名单：device.info / lock.status / pair.start / pair.finish
+ *   ✅ 准入闸门：建连限额、速率、帧上限、Origin 校验
+ *   ⬜ 载荷级 E2E：留 `Aead` 接口，见 docs/02 §4.4
+ *   ⬜ 中继与多通道竞速：见 docs/09
  *
- * 明确标注未实现的部分，比假装实现更安全：M1 联调时一眼能看出缺口在哪。
+ * 明确标注未实现的部分，比假装实现更安全：联调时一眼能看出缺口在哪。
  */
 
 import { createServer, type Server } from 'node:http'
@@ -16,6 +19,7 @@ import {
   decodeFrame,
   encodeFrame,
   hasRole,
+  isMethod,
   METHOD_POLICY,
   RpcError,
   type DeviceRole,
@@ -25,15 +29,42 @@ import {
 
 import type { GatewayHandlers, RouteContext } from './router.js'
 import { guardLock } from './guard.js'
+import {
+  AdmissionControl,
+  checkOrigin,
+  defaultAllowedOrigins,
+  PRE_AUTH_TIMEOUT_MS,
+} from './limits.js'
+
+/**
+ * 认证之前允许调用的方法。
+ *
+ * 这张表与 `LOCK_EXEMPT_METHODS` 是**两件不同的事**，不能合并：
+ *   - 锁豁免 = 锁死时仍然可达（解锁本身）
+ *   - 预认证 = 还没配对时也要能调（问主机是谁、发起配对）
+ * 之前的实现只有一个认证判断，导致 device.info 与 pair.* 被一起挡掉，
+ * 配对流程死锁——网关于是"除了 ping 什么都调不到"。
+ */
+const PRE_AUTH: ReadonlySet<Method> = new Set<Method>([
+  'device.info',
+  'lock.status',
+  'pair.start',
+  'pair.finish',
+])
 
 interface Conn {
   readonly id: string
   readonly ws: WebSocket
+  readonly ip: string
   deviceId: string
+  /** 配对时记录的展示名。 */
+  label: string
   role: DeviceRole
   authenticated: boolean
   alive: boolean
   seq: number
+  /** 未认证连接的超时计时器；认证成功或断开时清掉。 */
+  preAuthTimer: ReturnType<typeof setTimeout> | undefined
 }
 
 export interface GatewayOptions {
@@ -42,6 +73,8 @@ export interface GatewayOptions {
   readonly port: number
   readonly host: string
   readonly heartbeatMs: number
+  /** 额外允许的 Origin（dsh 自己的域名 / 反代地址）。 */
+  readonly allowedOrigins?: readonly string[]
 }
 
 export interface Gateway {
@@ -49,11 +82,22 @@ export interface Gateway {
   close(): Promise<void>
   /** 广播给所有已认证连接（锁状态变化用它）。 */
   broadcast(method: string, payload: unknown): void
+  /** 断开某台设备的全部在线连接（撤销用）。 */
+  disconnectDevice(deviceId: string): number
+  /**
+   * 把一条连接升格为已认证（pair.finish 调用）。
+   *
+   * 放在网关接口上而不是让 router 直接改 Conn：Conn 是网关的私有状态，
+   * 认证状态只能有一个写入口，否则"某条连接到底认证没有"会散落在两处。
+   */
+  authenticate(connId: string, deviceId: string, role: DeviceRole, label: string): boolean
   readonly connections: number
 }
 
 export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
   const { rc, handlers, port, host, heartbeatMs } = opts
+  const allowedOrigins = [...defaultAllowedOrigins(), ...(opts.allowedOrigins ?? [])]
+  const admission = new AdmissionControl()
   const conns = new Map<string, Conn>()
   let nextId = 0
 
@@ -62,7 +106,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
     // 这里回 426 是给"用浏览器误打开端口"的人一个明确答案，而不是超时。
     if (req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, connections: conns.size }))
+      res.end(JSON.stringify({ ok: true, connections: conns.size, tls: false }))
       return
     }
     res.writeHead(426, { 'content-type': 'text/plain; charset=utf-8', upgrade: 'websocket' })
@@ -70,6 +114,31 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
   })
 
   const wss = new WebSocketServer({ server: http, path: '/dshlink' })
+
+  /**
+   * HTTP upgrade 阶段就把明显不该放的连接挡掉。
+   *
+   * 放在这里而不是 `connection` 事件之后：到这里还没分配任何连接对象、没注册
+   * 任何监听器，拒绝的成本最低。Origin 与建连限额都在这一层判断。
+   */
+  http.on('upgrade', (req, socket) => {
+    const ip = req.socket.remoteAddress ?? 'unknown'
+    if (!checkOrigin(req.headers.origin, allowedOrigins, req.headers.host)) {
+      rc.ctx.logger?.warn('[dsh-link] 拒绝来源 %s（Origin %s）', ip, req.headers.origin ?? '?')
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    const verdict = admission.admitConnection(ip)
+    if (!verdict.ok) {
+      rc.ctx.logger?.warn('[dsh-link] 拒绝连接 %s：%s', ip, verdict.reason)
+      socket.write(`HTTP/1.1 ${String(verdict.code)} Too Many Requests\r\nConnection: close\r\n\r\n`)
+      socket.destroy()
+    }
+    // 通过时不做任何事：WebSocketServer 自己的 upgrade 监听会接管。
+    // 但额度已经在上面扣了，所以 connection 事件里不能再重复扣。
+    ;(socket as { __dshLinkAdmitted?: boolean }).__dshLinkAdmitted = verdict.ok
+  })
 
   const send = (conn: Conn, frame: Frame): void => {
     if (conn.ws.readyState !== conn.ws.OPEN) return
@@ -108,6 +177,10 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
     const method = frame.m as Method
     const params = (frame.p ?? {}) as Record<string, unknown>
 
+    if (!isMethod(method)) {
+      fail(conn, frame.id, new RpcError('rpc/unknown', `未知方法 ${frame.m}`))
+      return
+    }
     const policy = METHOD_POLICY[method]
     if (policy === undefined) {
       fail(conn, frame.id, new RpcError('rpc/unknown', `未知方法 ${frame.m}`))
@@ -115,23 +188,27 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
     }
 
     try {
-      // ① 锁：先于角色判断。锁死时连"你有没有权限"都不该回答。
+      // ① 锁：先于角色与认证判断。锁死时连"你有没有权限"都不该回答。
       guardLock(rc.lock.get(), method)
 
-      // ② 角色
-      if (!conn.authenticated) {
+      // ② 认证：只有预认证白名单里的方法可以匿名调用
+      if (!conn.authenticated && !PRE_AUTH.has(method)) {
         throw new RpcError('auth/need-pair', '连接尚未认证，请先配对')
       }
+
+      // ③ 角色：预认证连接按 viewer 处理，白名单里的方法本来也是 viewer 级
       if (!hasRole(conn.role, policy.role)) {
         throw new RpcError('auth/forbidden', `需要 ${policy.role} 角色`)
       }
 
-      // ③ 执行
+      // ④ 执行
       const handler = handlers[method]
       const result = await handler(rc, params, {
         deviceId: conn.deviceId,
+        label: conn.label === '' ? undefined : conn.label,
         role: conn.role,
-        remoteAddress: '',
+        remoteAddress: conn.ip,
+        connId: conn.id,
       })
 
       // 任何一次成功调用都算活动（否则用户在手机上操作，PC 仍然会因为空闲而锁）
@@ -143,22 +220,58 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
   }
 
   wss.on('connection', (ws, req) => {
+    const ip = req.socket.remoteAddress ?? 'unknown'
+    const admitted = (req.socket as { __dshLinkAdmitted?: boolean }).__dshLinkAdmitted === true
+    if (!admitted) {
+      // 理论上不会走到这里：upgrade 阶段已经挡住。留着是为了失败关闭，
+      // 避免将来改动 upgrade 逻辑时出现"未限额但放行"的缺口。
+      ws.close(1008, 'not admitted')
+      return
+    }
+
     const conn: Conn = {
       id: `c_${nextId++}`,
       ws,
+      ip,
       deviceId: 'unpaired',
+      label: '',
       role: 'viewer',
       authenticated: false,
       alive: true,
       seq: 0,
+      preAuthTimer: undefined,
     }
     conns.set(conn.id, conn)
-    rc.ctx.logger?.info('[dsh-link] 连接来自 %s（%s）', req.socket.remoteAddress ?? '?', conn.id)
+    rc.ctx.logger?.info('[dsh-link] 连接来自 %s（%s）', ip, conn.id)
+
+    // 未认证连接不能无限期挂着
+    conn.preAuthTimer = setTimeout(() => {
+      if (conn.authenticated) return
+      rc.ctx.logger?.info('[dsh-link] 未认证超时，断开 %s', conn.id)
+      try {
+        ws.close(1008, 'authentication timeout')
+      } catch {
+        /* 已断 */
+      }
+    }, PRE_AUTH_TIMEOUT_MS)
+    conn.preAuthTimer.unref?.()
 
     ws.on('message', (data) => {
+      const raw = typeof data === 'string' ? data : data.toString()
+      // 帧上限在解析之前判断：一条超大帧不该被 JSON.parse 一遍再拒绝
+      const sized = admission.checkFrame(Buffer.byteLength(raw, 'utf8'))
+      if (!sized.ok) {
+        rc.ctx.logger?.warn('[dsh-link] 帧超限 %s：%s', conn.id, sized.reason)
+        try {
+          ws.close(1009, 'frame too large')
+        } catch {
+          /* 已断 */
+        }
+        return
+      }
       let frame: Frame
       try {
-        frame = decodeFrame(typeof data === 'string' ? data : data.toString())
+        frame = decodeFrame(raw)
       } catch {
         ws.close(1002, 'bad frame')
         return
@@ -171,14 +284,41 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
     })
 
     ws.on('close', () => {
+      if (conn.preAuthTimer) clearTimeout(conn.preAuthTimer)
       conns.delete(conn.id)
+      admission.releaseConnection(ip)
       rc.ctx.logger?.info('[dsh-link] 断开 %s', conn.id)
     })
 
     ws.on('error', (err) => {
       rc.ctx.logger?.warn('[dsh-link] socket 错误 %s: %s', conn.id, err.message)
     })
+
+    // 认证成功的连接要把 preAuthTimer 清掉：由 pair.finish 的 handler 调用
+    conn.ws.on('close', () => {
+      if (conn.preAuthTimer) clearTimeout(conn.preAuthTimer)
+    })
   })
+
+  /**
+   * 供 pair.finish 使用：把一条连接升格为已认证。
+   *
+   * 放在网关内部而不是 router 里，是因为 Conn 是网关的私有状态——
+   * router 只能通过这个函数改动它，避免认证状态散落在两处。
+   */
+  const authenticate = (connId: string, deviceId: string, role: DeviceRole, label: string): boolean => {
+    const conn = conns.get(connId)
+    if (conn === undefined) return false
+    conn.deviceId = deviceId
+    conn.role = role
+    conn.label = label
+    conn.authenticated = true
+    if (conn.preAuthTimer) {
+      clearTimeout(conn.preAuthTimer)
+      conn.preAuthTimer = undefined
+    }
+    return true
+  }
 
   // 心跳：两个周期无 pong 即断开。反代吞掉空闲连接时这是唯一能发现的手段。
   const heartbeat = setInterval(() => {
@@ -210,7 +350,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
 
   const addr = http.address()
   const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port
-  rc.ctx.logger?.info('[dsh-link] gateway 监听 %s:%d', host, actualPort)
+  rc.ctx.logger?.info('[dsh-link] gateway 监听 %s:%d（明文 WS）', host, actualPort)
 
   return {
     port: actualPort,
@@ -218,9 +358,23 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       return conns.size
     },
     broadcast,
+    disconnectDevice(deviceId: string): number {
+      let closed = 0
+      for (const conn of conns.values()) {
+        if (conn.deviceId !== deviceId) continue
+        closed += 1
+        try {
+          conn.ws.close(1008, 'device revoked')
+        } catch {
+          /* 已断 */
+        }
+      }
+      return closed
+    },
     async close() {
       clearInterval(heartbeat)
       for (const conn of conns.values()) {
+        if (conn.preAuthTimer) clearTimeout(conn.preAuthTimer)
         try {
           conn.ws.close(1001, 'host shutting down')
         } catch {
@@ -231,5 +385,6 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       await new Promise<void>((resolve) => wss.close(() => resolve()))
       await new Promise<void>((resolve) => http.close(() => resolve()))
     },
+    authenticate,
   }
 }
