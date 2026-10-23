@@ -189,18 +189,31 @@ interface CostInfo {
 }
 const cost = ref<CostInfo | undefined>(undefined)
 
+/**
+ * 会话费用文本。
+ *
+ * 真实结构（实测）：
+ *   { own: { cost, costCny, apiCost, calls, input, output }, subagents, subagentCount, found }
+ * 之前按 { total: { amount } } 读，永远取不到 —— 卡片上因此一直没有金额。
+ *
+ * 优先显示人民币（用户在国内），没有 CNY 字段时回退美元。
+ * 金额很小时保留 4 位小数：一次对话可能只花几分钱。
+ */
 function costText(): string {
   const c = cost.value
   if (c?.available !== true) return ''
-  const s = c.session as { total?: { amount?: number; currency?: string }; cost?: number; usd?: number } | null | undefined
-  if (s === null || s === undefined) return ''
-  const amount = typeof s.total?.amount === 'number' ? s.total.amount
-    : typeof s.cost === 'number' ? s.cost
-      : typeof s.usd === 'number' ? s.usd : undefined
-  if (amount === undefined) return ''
-  const cur = s.total?.currency ?? 'USD'
-  const symbol = cur === 'CNY' ? '¥' : '$'
-  return `${symbol}${amount.toFixed(amount < 0.01 ? 4 : 2)}`
+  const session = c.session as
+    | { own?: { cost?: number; costCny?: number }; found?: boolean }
+    | null
+    | undefined
+  const own = session?.own
+  if (own === undefined) return ''
+
+  const cny = typeof own.costCny === 'number' ? own.costCny : undefined
+  const usd = typeof own.cost === 'number' ? own.cost : undefined
+  if (cny !== undefined) return `¥${cny.toFixed(cny < 1 ? 3 : 2)}`
+  if (usd !== undefined) return `$${usd.toFixed(usd < 1 ? 3 : 2)}`
+  return ''
 }
 
 /** 峰谷提醒：只给"还有多久切换"，不说"省钱多少"——金额口径不归我们解释。 */
@@ -654,7 +667,7 @@ onLoad(() => {
             v-if="d.deviceId === state.activeId && (costText().length > 0 || peakText().length > 0)"
             class="dev-cost"
           >
-            <text v-if="costText().length > 0" class="cost mono">本次 {{ costText() }}</text>
+            <text v-if="costText().length > 0" class="cost mono">累计 {{ costText() }}</text>
             <text v-if="peakText().length > 0" class="peak mono" :class="peakTone()">{{ peakText() }}</text>
           </view>
           </MossTerm>
