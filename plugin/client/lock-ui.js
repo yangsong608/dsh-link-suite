@@ -573,6 +573,11 @@ window.__ModuleLoader__.load({
       '.__dl_devName{font-size:12.5px;color:var(--dsw-alias-label-primary)}',
       '.__dl_devMeta{font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:2px}',
       '.__dl_btns{display:flex;gap:8px;flex-wrap:wrap}',
+      '.__dl_qrWrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0 4px}',
+      '.__dl_qr{display:block;border-radius:8px;background:#fff;padding:0}',
+      '.__dl_addr{display:flex;align-items:center;gap:8px;margin-top:8px;padding:7px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}',
+      '.__dl_addrLabel{font-size:11px;color:var(--dsw-alias-label-tertiary);flex:none}',
+      '.__dl_addr code{font-size:11.5px;color:var(--dsw-alias-label-secondary);word-break:break-all}',
       '.__dl_two{display:grid;grid-template-columns:1fr 1fr;gap:10px}',
       '@media (max-width:620px){.__dl_two{grid-template-columns:1fr}}'
     ].join('')
@@ -616,13 +621,69 @@ window.__ModuleLoader__.load({
       }, [])
     }
 
+    /**
+     * 二维码画布。
+     *
+     * 为什么用 canvas 而不是一堆 div 画格子：
+     *   33×33 是 1089 个节点，40×40 是 1600 个。设置面板在 React 里，
+     *   这么多 DOM 节点会让每次状态更新（比如倒计时）都重排一次。
+     *   canvas 只有 1 个节点，且二维码本来就该按像素画——
+     *   DOM 格子很容易因为亚像素取整出现缝隙，扫不出来。
+     *
+     * 白底是必须的：深色背景下反色二维码（黑底白块）很多扫描器不认。
+     */
+    function QrCanvas(props) {
+      var ref = React.useRef(null)
+      var qr = props && props.qr
+      var size = (props && props.size) || 188
+
+      React.useEffect(function () {
+        var canvas = ref.current
+        if (!canvas || !qr || !Array.isArray(qr.modules)) return
+        var n = qr.size
+        // 静区（quiet zone）4 个模块是规范要求，少了扫不出来
+        var quiet = 4
+        var total = n + quiet * 2
+        // 按设备像素比放大，避免高分屏上模块边缘发虚
+        var dpr = Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1)
+        canvas.width = size * dpr
+        canvas.height = size * dpr
+        canvas.style.width = size + 'px'
+        canvas.style.height = size + 'px'
+        var ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, size, size)
+        ctx.fillStyle = '#000000'
+        var cell = size / total
+        for (var y = 0; y < n; y++) {
+          for (var x = 0; x < n; x++) {
+            if (!qr.modules[y][x]) continue
+            // 用 Math.round 对齐边界：浮点坐标会让相邻模块之间出现 1px 白缝
+            var px = Math.round((x + quiet) * cell)
+            var py = Math.round((y + quiet) * cell)
+            var pw = Math.round((x + quiet + 1) * cell) - px
+            var ph = Math.round((y + quiet + 1) * cell) - py
+            ctx.fillRect(px, py, pw, ph)
+          }
+        }
+      }, [qr, size])
+
+      return e('div', { className: '__dl_qrWrap' },
+        e('canvas', { ref: ref, className: '__dl_qr' }),
+        e('div', { className: '__dl_codeHint' }, '手机 App → 添加电脑 → 扫码配对'))
+    }
+
     function LinkSettings() {
       var api = usePanelApi()
       var st = React.useState({ armed: false, hasPassword: false, locked: false, connections: 0 })
       var status = st[0], setStatus = st[1]
       var pw = React.useState({ next: '', current: '', msg: '', kind: '' })
       var pwState = pw[0], setPw = pw[1]
-      var pair = React.useState({ code: '', left: 0, msg: '', kind: '' })
+      // qr / wsUrl / candidates 显式初始化：虽然渲染时都有判空，
+      // 但 state 形状完整能让"新增字段忘了初始化"这类问题一眼可见。
+      var pair = React.useState({ code: '', left: 0, msg: '', kind: '', qr: null, wsUrl: '', candidates: [] })
       var pairState = pair[0], setPair = pair[1]
       var dev = React.useState({ list: [], msg: '', kind: '' })
       var devState = dev[0], setDev = dev[1]
@@ -691,7 +752,18 @@ window.__ModuleLoader__.load({
             return
           }
           var left = Math.max(0, Math.round((out.body.expiresAt - Date.now()) / 1000))
-          setPair({ code: out.body.code, left: left, msg: '', kind: '' })
+          setPair({
+            code: out.body.code,
+            left: left,
+            msg: '',
+            kind: '',
+            // 二维码矩阵由宿主算好（body.qr），这里只存下来供渲染。
+            // 设置面板与独立设置页必须表现一致——之前只有独立页有二维码，
+            // 从 dsh 设置里点「生成配对码」只看到 6 位数字，用户以为没生成。
+            qr: out.body.qr || null,
+            wsUrl: typeof out.body.wsUrl === 'string' ? out.body.wsUrl : '',
+            candidates: Array.isArray(out.body.candidates) ? out.body.candidates : [],
+          })
         })
       }
 
@@ -784,8 +856,18 @@ window.__ModuleLoader__.load({
             '生成 6 位码，在手机 App 的「添加电脑」里输入。码 2 分钟内有效，只能用一次。'),
           pairState.code && pairState.left > 0
             ? e('div', null,
+                pairState.qr ? e(QrCanvas, { qr: pairState.qr, size: 188 }) : null,
                 e('div', { className: '__dl_code' }, pairState.code),
-                e('div', { className: '__dl_codeHint' }, String(pairState.left) + ' 秒后失效'))
+                e('div', { className: '__dl_codeHint' }, String(pairState.left) + ' 秒后失效'),
+                pairState.wsUrl
+                  ? e('div', { className: '__dl_addr' },
+                      e('span', { className: '__dl_addrLabel' }, '地址'),
+                      e('code', null, pairState.wsUrl))
+                  : null,
+                pairState.candidates.length > 1
+                  ? e('div', { className: '__dl_hint' },
+                      '连不上时换用：' + pairState.candidates.slice(1).map(function (c) { return c.wsUrl }).join(' / '))
+                  : null)
             : pairState.code
               ? e('div', { className: '__dl_hint' }, '配对码已过期，请重新生成')
               : null,
