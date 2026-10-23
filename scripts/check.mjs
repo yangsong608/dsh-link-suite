@@ -28,7 +28,7 @@ const only = onlyArg === undefined ? undefined : new Set(onlyArg.slice('--only='
 const steps = [
   {
     id: 'protocol',
-    label: '协议：构建 + 24 项自测',
+    label: '协议：构建 + 24 项自测（产出 dist/，插件依赖它）',
     cwd: 'shared/protocol',
     bin: 'npm',
     args: ['test'],
@@ -36,11 +36,11 @@ const steps = [
   },
   {
     id: 'plugin',
-    label: '插件：编译 + 10 项自测',
+    label: '插件：编译 + 16 项自测',
     cwd: 'plugin',
     bin: 'npm',
     args: ['test'],
-    requires: ['plugin/node_modules', 'shared/protocol/dist/index.js'],
+    requires: ['plugin/node_modules'],
   },
   {
     id: 'app-typecheck',
@@ -64,7 +64,12 @@ const steps = [
       ]),
 ]
 
-/** 依赖缺失时给出可执行的修复命令，而不是一句 ENOENT。 */
+/** 依赖缺失时给出可执行的修复命令，而不是一句 ENOENT。
+ *
+ * 注意 `requires` 只放"装完依赖就该存在"的东西（node_modules）。
+ * 构建产物（如 shared/protocol/dist）不能放进来：它们在 CI 里 checkout 后
+ * 本来就不存在，要由前面的步骤生产出来。把产物写成前置依赖会得到一个
+ * 永远无法通过的检查——这正是 CI 第一版踩到的坑。 */
 function missingDependency(step) {
   for (const rel of step.requires) {
     if (!existsSync(join(ROOT, rel))) return rel
