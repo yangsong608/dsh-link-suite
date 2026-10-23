@@ -1104,7 +1104,24 @@ async function resolveWorkspacePath(
   if (root.length === 0) root = workspaces[0]?.path ?? ''
   if (root.length === 0) throw new RpcError('host/unavailable', '宿主没有工作区')
 
-  return { root, rel }
+  /*
+   * 产物里的路径可能是**绝对路径**。
+   *
+   * dsh 文件工具记录 diff 时给的是真实路径（/Volumes/.../a.md），
+   * 而这里其余调用传的都是工作区相对路径。两种都要能用：
+   * 绝对路径先转成相对，落在工作区外则拒绝（不能借它读系统文件）。
+   */
+  let relative = rel
+  if (relative.startsWith('/')) {
+    const { relative: toRel } = await import('node:path')
+    const r = toRel(root, relative)
+    if (r.startsWith('..') || r.startsWith('/')) {
+      throw new RpcError('auth/forbidden', '路径不在工作区内')
+    }
+    relative = r
+  }
+
+  return { root, rel: relative }
 }
 
 /**
