@@ -584,7 +584,19 @@ export function createHandlers(): GatewayHandlers {
     // 纯 git 变更（提交/删除/重命名）。响应里带 approximate: true 与说明。
     'session.changes': async (rc, p) => {
       const sessionId = str(p, 'sessionId')
-      const events = await collectSessionEvents(rc, sessionId)
+      /*
+       * 取事件失败不能整条 RPC 失败。
+       *
+       * 子代理会话在宿主里没有独立的 durable log，follow 会抛
+       * host/internal —— 对产物来说这不是错误，只是"没有事件可看"，
+       * 后面还有宿主投影与时间兜底可用。
+       */
+      let events: readonly unknown[] = []
+      try {
+        events = await collectSessionEvents(rc, sessionId)
+      } catch {
+        events = []
+      }
 
       // 首选：宿主自己的 changes 投影（准确、含 git 与 shell 改动）
       const hostFiles = await readHostChanges(rc, sessionId, events)
