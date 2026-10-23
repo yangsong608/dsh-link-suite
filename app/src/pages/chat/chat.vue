@@ -14,6 +14,7 @@ import { humanBytes, pickFile, pickImage } from '@/core/attach'
 import { currentLink, connectDevice, refreshAll, setSessionListener } from '@/core/link'
 import MossDot from '@/components/moss/MossDot.vue'
 import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
+import MossMarkdown from '@/components/MossMarkdown.vue'
 
 type Item =
   | { k: 'user'; text: string; at: string }
@@ -995,14 +996,14 @@ onUnmounted(() => {
       <template v-for="(it, i) in items" :key="i">
         <!-- 用户：右对齐，唯一有底色的东西 -->
         <view v-if="it.k === 'user'" class="me">
-          <text class="me-b">{{ it.text }}</text>
+          <view class="me-b"><MossMarkdown :text="it.text" /></view>
         </view>
 
         <!-- agent：左竖条，无底色 -->
         <view v-else-if="it.k === 'assist'" class="ai">
           <view class="ai-bar" />
           <view class="ai-body">
-            <text class="ai-t">{{ it.text }}</text>
+            <MossMarkdown class="ai-t" :text="it.text" />
             <text v-if="it.streaming" class="cursor" />
             <text class="ai-at mono">{{ it.at }}</text>
           </view>
