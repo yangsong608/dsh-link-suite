@@ -11,7 +11,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import { state, skinClass, themeClass, liteClass, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
 import { humanBytes, pickFile, pickImage } from '@/core/attach'
-import { currentLink, connectDevice, refreshAll, setSessionListener } from '@/core/link'
+import { currentLink, connectDevice, disconnect, refreshAll, setSessionListener } from '@/core/link'
 import MossDot from '@/components/moss/MossDot.vue'
 import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
 import MossMarkdown from '@/components/MossMarkdown.vue'
@@ -35,6 +35,24 @@ type Item =
  */
 /** 宽屏（平板横屏/大屏）时启用三栏：会话列表 / 对话 / 产物。 */
 const wide = ref(false)
+
+/**
+ * 连接状态横幅。
+ *
+ * 原来断开后只在设备页能看到"离线"，用户停在对话页发消息，
+ * 失败提示又跑到聊天流顶部——他只会觉得"发了没反应"。
+ */
+const activeDevice = computed(() => state.devices.find((d) => d.deviceId === state.activeId))
+const linkDown = computed(() => activeDevice.value !== undefined && activeDevice.value.conn !== 'online')
+
+function reconnectNow(): void {
+  const device = activeDevice.value
+  if (device === undefined) return
+  haptic('medium')
+  // 幂等连接对同地址不重建，先断开再连（与设备页「重新连接」一致）
+  disconnect()
+  connectDevice(device)
+}
 
 /**
  * 长会话的渲染窗口。
@@ -1159,6 +1177,17 @@ onUnmounted(() => {
       </view>
     </view>
 
+    <!-- 断线横幅：一直在，直到连上 -->
+    <view v-if="linkDown" class="conn-bar" @tap="reconnectNow">
+      <text class="conn-t">已断开连接 · 点此重连</text>
+      <view class="conn-chev" />
+    </view>
+
+    <!-- 发送失败：贴在输入框上方，别让用户找不到 -->
+    <view v-if="errorText.length > 0" class="send-bar">
+      <text class="send-t">{{ errorText }}</text>
+    </view>
+
     <view class="composer safe-bottom">
       <!-- 模型选择：与 dsh 同步，改变后续回合用的模型 -->
       <view class="modelbar">
@@ -1872,6 +1901,36 @@ onUnmounted(() => {
 .diff-txt { flex: 1; min-width: 0; font-size: 11.5px; color: var(--t2); white-space: pre-wrap; word-break: break-all; }
 .diff-line.add .diff-sig, .diff-line.add .diff-txt { color: var(--acc); }
 .diff-line.del .diff-sig, .diff-line.del .diff-txt { color: var(--danger); }
+
+.conn-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 14px;
+  background: var(--warn-soft, rgba(230, 180, 60, 0.14));
+  border-top: 1px solid var(--bd);
+}
+
+.conn-t { font-size: 12px; color: var(--warn, #e6b43c); }
+
+.conn-chev {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--warn, #e6b43c);
+  border-top: 1.5px solid var(--warn, #e6b43c);
+  transform: rotate(45deg);
+}
+
+/* 发送失败常驻到下次发送成功：贴在输入框正上方，视线必经处 */
+.send-bar {
+  padding: 8px 14px;
+  background: var(--danger-soft, rgba(229, 72, 77, 0.14));
+  border-top: 1px solid var(--bd);
+}
+
+.send-t { font-size: 12px; color: var(--danger); line-height: 17px; }
 
 .composer {
   width: 100%;
