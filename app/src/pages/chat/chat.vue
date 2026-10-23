@@ -121,8 +121,9 @@ const diffView = ref<{ path: string; hunks: { t: string; s: string }[] } | undef
  */
 interface SheetState {
   visible: boolean
-  kind: 'menu' | 'confirm' | 'prompt'
+  kind: 'menu' | 'confirm' | 'prompt' | 'info'
   title?: string
+  multiline?: boolean
   items?: SheetItem[]
   message?: string
   value?: string
@@ -235,21 +236,21 @@ function chatMenu(): void {
 async function renameCurrent(): Promise<void> {
   const link = currentLink()
   if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
-  uni.showModal({
+  openSheet({
+    kind: 'prompt',
     title: '重命名会话',
-    editable: true,
-    content: title.value,
-    success: async (res) => {
-      if (!res.confirm) return
-      const next = String(res.content ?? '').trim()
+    value: title.value,
+    placeholder: '会话标题',
+    confirmText: '保存',
+    onConfirm: (text) => {
+      const next = text.trim()
       if (next.length === 0) return
-      try {
-        await link.call('session.rename', { sessionId: sessionId.value, title: next })
+      void link.call('session.rename', { sessionId: sessionId.value, title: next }).then(() => {
         title.value = next
         uni.showToast({ title: '已重命名', icon: 'none' })
-      } catch (e) {
+      }).catch((e: unknown) => {
         uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
-      }
+      })
     },
   })
 }
@@ -257,29 +258,30 @@ async function renameCurrent(): Promise<void> {
 async function archiveCurrent(): Promise<void> {
   const link = currentLink()
   if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
-  uni.showModal({
-    title: '归档这个会话？',
-    content: '归档后不再出现在列表里，日志仍保留在电脑上。',
+  openSheet({
+    kind: 'confirm',
+    title: '归档这个会话',
+    message: '归档后不再出现在列表里，日志仍保留在电脑上。',
     confirmText: '归档',
-    success: async (res) => {
-      if (!res.confirm) return
-      try {
-        await link.call('session.archive', { sessionId: sessionId.value, force: true })
-        uni.showToast({ title: '已归档', icon: 'none' })
-        setTimeout(() => uni.navigateBack(), 600)
-      } catch (e) {
-        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
-      }
+    onConfirm: () => {
+      void (async () => {
+        try {
+          await link.call('session.archive', { sessionId: sessionId.value, force: true })
+          uni.showToast({ title: '已归档', icon: 'none' })
+          setTimeout(() => uni.navigateBack(), 600)
+        } catch (e) {
+          uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
+        }
+      })()
     },
   })
 }
 
 function showInfo(): void {
-  uni.showModal({
+  openSheet({
+    kind: 'info',
     title: '会话信息',
-    content: `会话 ID：${sessionId.value}\n状态：${statusLabel.value}\n已加载：${items.value.length} 条`,
-    showCancel: false,
-    confirmText: '关闭',
+    message: `会话 ID：${sessionId.value}\n状态：${statusLabel.value}\n已加载：${items.value.length} 条`,
   })
 }
 
@@ -391,20 +393,21 @@ async function queueSteer(itemId: string): Promise<void> {
 async function queueEdit(item: { itemId: string; text: string }): Promise<void> {
   const link = currentLink()
   if (link === undefined) return
-  uni.showModal({
+  openSheet({
+    kind: 'prompt',
     title: '修改排队消息',
-    editable: true,
-    content: item.text,
-    success: async (res) => {
-      if (!res.confirm) return
-      const text = String(res.content ?? '').trim()
-      if (text.length === 0) return
-      try {
-        await link.call('session.queue.edit', { sessionId: sessionId.value, itemId: item.itemId, text })
-        await loadQueue()
-      } catch (e) {
-        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '修改失败', icon: 'none' })
-      }
+    value: item.text,
+    multiline: true,
+    placeholder: '这条消息会在当前这轮结束后发出',
+    confirmText: '保存',
+    onConfirm: (text) => {
+      const next = text.trim()
+      if (next.length === 0) return
+      void link.call('session.queue.edit', { sessionId: sessionId.value, itemId: item.itemId, text: next })
+        .then(() => loadQueue())
+        .catch((e: unknown) => {
+          uni.showToast({ title: e instanceof Error ? e.message.slice(0, 18) : '修改失败', icon: 'none' })
+        })
     },
   })
 }
