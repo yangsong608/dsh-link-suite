@@ -47,7 +47,24 @@ const title = computed(() => {
 const lines = computed(() => {
   const f = file.value
   if (f === undefined || (f.kind !== 'text' && f.kind !== 'markdown')) return []
+  // JSON 美化：dsh 的配置文件与接口返回基本都是压缩成一行的，
+  // 不美化等于给用户看一堵墙
+  if (f.kind === 'text' && f.path.toLowerCase().endsWith('.json')) {
+    try {
+      return JSON.stringify(JSON.parse(f.text), null, 2).split('\n')
+    } catch {
+      return f.text.split('\n')
+    }
+  }
   return f.text.split('\n')
+})
+
+/** CSV 预览：按 genui 的 table 思路渲染成表格，而不是一堆逗号。 */
+const csv = computed(() => {
+  const f = file.value
+  if (f === undefined || f.kind !== 'text' || !f.path.toLowerCase().endsWith('.csv')) return undefined
+  const rows = f.text.split('\n').filter((l) => l.trim().length > 0).slice(0, 200)
+  return rows.map((l) => l.split(',').map((c) => c.trim().replace(/^"|"$/g, '')))
 })
 
 async function open(path: string): Promise<void> {
@@ -269,6 +286,23 @@ function close(): void {
 }
 
 .name { flex: 1; min-width: 0; font-size: 13px; color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* CSV 表格：首行当表头，单元格不换行（横向滚动） */
+.tbl { display: inline-block; min-width: 100%; }
+.tr { display: flex; border-bottom: 1px solid var(--bd); }
+.tr.th { background: var(--s2); }
+.td {
+  flex: none;
+  min-width: 84px;
+  max-width: 220px;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  color: var(--t2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr.th .td { color: var(--t1); font-weight: 600; }
 
 /* 代码：行号固定宽，源码不换行（横向滚动） */
 .code-body { padding-bottom: 24px; }
