@@ -821,6 +821,56 @@ export function createHandlers(): GatewayHandlers {
       }
     },
 
+    /**
+     * 计划 / 待办步骤。
+     *
+     * 来自宿主的 `plan` 投影：它在会话日志上折叠出 { active, pending }，
+     * 重启后依然存在。App 之前完全没有这块——用户看不到 agent 打算做什么。
+     */
+    'session.plan': async (rc, p) => {
+      const sessions = sessionsOf(rc.ctx)
+      if (sessions?.projections === undefined) throw new RpcError('host/unavailable', '宿主不支持投影')
+      const sessionId = str(p, 'sessionId')
+      const controller = new AbortController()
+      const projection = (await sessions.projections({ sessionId }, controller.signal)) as {
+        values?: Record<string, unknown>
+      }
+      const plan = (projection.values?.['plan'] ?? null) as
+        | { active?: boolean; steps?: { text?: string; status?: string }[]; pending?: unknown }
+        | null
+      const steps = Array.isArray(plan?.steps)
+        ? plan.steps.map((x) => ({ text: String(x?.text ?? ''), status: String(x?.status ?? 'pending') }))
+        : []
+      return { active: plan?.active === true, steps }
+    },
+
+    // ── 斜杠命令 ─────────────────────────────────────────────────────────
+    //
+    // /plan、/compact 这些不是普通消息：它们由宿主的命令注册表处理，
+    // 直接当 prompt 发出去不会进入对应模式（/plan 会被当成一句话）。
+    'session.command': async (rc, p) => {
+      const commands = rc.ctx.get<CommandService>('commands', false)
+      const agents = rc.ctx.get<AgentRegistry>('agents', false)
+      if (commands?.execute === undefined) throw new RpcError('host/unavailable', '宿主没有命令服务')
+
+      const sessionId = str(p, 'sessionId')
+      const line = str(p, 'text').trim()
+      if (line.length === 0) throw new RpcError('rpc/bad-args', '命令为空')
+
+      const agent = agents?.get?.(sessionId)
+      if (agent === undefined) throw new RpcError('session/not-found', '找不到这个会话')
+
+      const controller = new AbortController()
+      const result = (await commands.execute(agent, line, [], controller.signal)) as
+        | { kind?: string; text?: string }
+        | undefined
+      return {
+        ok: result?.kind !== 'error',
+        kind: result?.kind ?? 'success',
+        text: result?.text ?? '',
+      }
+    },
+
     // ── 费用与峰谷 ────────────────────────────────────────────────────────
     //
     // 数据**转发**自 dsh-cost-meter，不自算金额：它的账本按真实 token 用量与
@@ -1299,4 +1349,19 @@ async function recentFiles(
 
   await walk(root, 0)
   return out
+}
+
+/** 宿主命令注册表（plan-mode / compact 等都注册在这里）。 */
+interface CommandService {
+  execute?(
+    agent: unknown,
+    line: string,
+    attachments: readonly unknown[],
+    signal: AbortSignal,
+  ): Promise<{ kind?: string; text?: string } | undefined>
+}
+
+/** 宿主 agent 注册表：按 sessionId 取 agent。 */
+interface AgentRegistry {
+  get?(sessionId: string): unknown
 }
