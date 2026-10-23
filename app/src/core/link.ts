@@ -98,6 +98,36 @@ export function connectDevice(device: DeviceCard): Link | undefined {
   link.on('approval.request', (payload) => sessionListener?.('approval.request', payload))
   link.on('lock.changed', (payload) => sessionListener?.('lock.changed', payload))
 
+  /*
+   * 状态实时同步。
+   *
+   * 之前这些状态只有"打开页面那一刻"是对的：设备在线/离线、会话在跑/空闲
+   * 全靠 refreshAll 拉列表。用户在列表页看着，电脑上跑完了他也不知道。
+   *
+   * 现在宿主在轮次边界与设备变化时广播，这里直接改 store（不经过页面），
+   * 任何正在看列表的页面都会立刻重渲染。
+   */
+  link.on('session.status', (payload) => {
+    const p = payload as { sessionId?: unknown; running?: unknown } | undefined
+    const id = typeof p?.sessionId === 'string' ? p.sessionId : ''
+    if (id.length === 0) return
+    const next = p?.running === true ? 'running' : 'done'
+    const row = state.sessions.find((x) => x.id === id)
+    if (row !== undefined && row.status !== next) {
+      // SessionRow 的字段是只读的，就地替换这一条
+      const idx = state.sessions.findIndex((x) => x.id === id)
+      if (idx >= 0) {
+        const cur = state.sessions[idx]
+        if (cur !== undefined) state.sessions[idx] = { ...cur, status: next, updatedAt: Date.now() }
+      }
+    }
+  })
+
+  link.on('device.changed', () => {
+    // 设备表可能新增/撤销：拉一次最新的（这条事件本身不带完整设备信息）
+    void refreshAll()
+  })
+
   link.connect()
   return link
 }
