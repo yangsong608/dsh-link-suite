@@ -15,6 +15,7 @@ import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, activeDevice, skinClass, themeClass, liteClass, type DeviceCard } from '@/core/store'
 import { haptic } from '@/core/haptic'
 import { connectDevice, refreshAll } from '@/core/link'
+import { decodePairUri } from '@dsh-link/protocol'
 
 /**
  * 启动动画只在**冷启动**播一次。
@@ -141,6 +142,43 @@ function addDevice(): void {
   pairOpen.value = true
   pairError.value = ''
   pairInput.value = ''
+}
+
+/**
+ * 扫码配对。
+ *
+ * 二维码内容由宿主生成（`dshlink://pair?h=..&p=..&c=..`），扫码后
+ * 一次拿到「地址 + 配对码」——用户不用再手抄 ws:// 地址，也不用
+ * 在两个界面之间切换。
+ *
+ * 手动输入仍然是保底：摄像头坏了、码看不清、或手机不方便扫码时，
+ * 用户仍能靠「地址 + 6 位码」完成配对。
+ */
+function scanToPair(): void {
+  haptic('light')
+  uni.scanCode({
+    onlyFromCamera: false,
+    scanType: ['qrCode'],
+    success: (res) => {
+      const raw = typeof res.result === 'string' ? res.result : ''
+      const parsed = decodePairUri(raw)
+      if (!parsed.ok) {
+        // 扫错了对象时要说清楚，而不是笼统的"无效二维码"
+        pairError.value =
+          parsed.reason === 'not-pair-uri'
+            ? '这不是 MOSS Link 的配对码（请扫电脑设置页上的那张）'
+            : '配对码格式不对，请让电脑重新生成'
+        return
+      }
+      pairAddress.value = parsed.wsUrl
+      pairInput.value = parsed.payload.code
+      pairError.value = ''
+      void finishPair()
+    },
+    fail: () => {
+      // 用户取消扫码不是错误，不弹提示
+    },
+  })
 }
 
 function closePair(): void {
@@ -353,10 +391,21 @@ onLoad(() => {
           <text class="tag mono">6 DIGITS</text>
         </view>
         <view class="term-body">
-          <text class="dlg-t">输入电脑上显示的 6 位码</text>
+          <text class="dlg-t">扫描电脑上的配对码</text>
           <text class="dlg-d t2">
-            在电脑上打开 DSH → dsh-link 设置 → 生成配对码。码 2 分钟内有效。
+            在电脑上打开 MOSS Link 设置 → 生成配对码。扫码自动填地址与码；也可以手动输入。
           </text>
+
+          <!-- 扫码是主路径：一次拿到地址+码，不用手抄 ws:// -->
+          <view class="scan-btn" :class="{ 'is-disabled': pairBusy }" @tap="scanToPair">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M4 8V5a1 1 0 0 1 1-1h3M20 8V5a1 1 0 0 0-1-1h-3M4 16v3a1 1 0 0 0 1 1h3M20 16v3a1 1 0 0 1-1 1h-3" />
+              <path d="M4 12h16" />
+            </svg>
+            <text>扫码配对</text>
+          </view>
+
+          <view class="or-row"><view class="or-line" /><text class="or-t t3">或手动输入</text><view class="or-line" /></view>
 
           <input
             v-model="pairInput"
@@ -452,6 +501,34 @@ onLoad(() => {
 .empty-h { font-size: 11px; letter-spacing: 0.18em; color: var(--t3); }
 .empty-t { display: block; margin-top: 8px; font-size: 14px; color: var(--t1); }
 .empty-d { display: block; margin-top: 6px; font-size: 11.5px; line-height: 17px; }
+
+.scan-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 52px;
+  margin-top: 16px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd-strong);
+  background: var(--acc-soft);
+  color: var(--acc);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.scan-btn:active { transform: scale(0.985); }
+.scan-btn svg { width: 20px; height: 20px; }
+
+.or-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 2px;
+}
+
+.or-line { flex: 1; height: 1px; background: var(--bd); }
+.or-t { font-size: 10.5px; letter-spacing: 0.1em; }
 
 .pair-input {
   width: 100%;

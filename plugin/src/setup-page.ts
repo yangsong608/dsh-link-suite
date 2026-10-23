@@ -184,6 +184,20 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
       .catch(function (e) { return { status: 0, body: { error: String(e) } } })
   }
 
+  /**
+   * HTML 转义（浏览器侧）。
+   *
+   * 注意：服务端的 escapeHtml 是 Node 函数，**不在浏览器作用域里**。
+   * 之前设备列表直接调了 esc(...) 而它并不存在——那不是"少个函数"，
+   * 是整段 innerHTML 赋值时会抛 ReferenceError，页面卡在"读取中"。
+   * 模板字符串里拼 HTML 就必须有这一份。
+   */
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    })
+  }
+
   function say(el, text, kind) {
     var node = document.getElementById(el)
     node.textContent = text
@@ -264,11 +278,41 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
     api('/pair/start', {}).then(function (out) {
       btn.disabled = false
       if (out.status !== 200) { say('pair-msg', (out.body && out.body.error) || '生成失败', 'err'); return }
-      var code = out.body.code
-      var left = Math.max(0, Math.round((out.body.expiresAt - Date.now()) / 1000))
+      var body = out.body
+      var code = body.code
+      var left = Math.max(0, Math.round((body.expiresAt - Date.now()) / 1000))
+
+      // 二维码：宿主已经把矩阵算好了（body.qr），这里只负责画格子。
+      // 不引 QR 库——插件侧的依赖面越小，dsh 升级时重新验证的成本越低。
+      var qrHtml = ''
+      if (body.qr && Array.isArray(body.qr.modules)) {
+        var n = body.qr.size
+        var cells = ''
+        for (var y = 0; y < n; y++) {
+          for (var x = 0; x < n; x++) {
+            cells += '<div class="qrc' + (body.qr.modules[y][x] ? ' on' : '') + '"></div>'
+          }
+        }
+        qrHtml =
+          '<div class="qr-wrap">' +
+            '<div class="qr" style="grid-template-columns:repeat(' + n + ',1fr)">' + cells + '</div>' +
+            '<div class="code-hint">手机 App 里点「扫码配对」</div>' +
+          '</div>'
+      }
+
+      // 手动输入保底：摄像头坏了、二维码看不清、或手机不方便扫码时仍能配对
+      var addrList = (body.candidates || []).map(function (c) {
+        return '<div class="addr-row"><code>' + esc(c.wsUrl) + '</code>' +
+               '<button class="copy" data-copy="' + esc(c.wsUrl) + '">复制</button></div>'
+      }).join('')
+
       document.getElementById('pair-out').innerHTML =
+        qrHtml +
         '<div class="code">' + code + '</div>' +
-        '<div class="code-hint">在手机上输入这个码 · <span id="ttl">' + left + '</span> 秒后失效</div>'
+        '<div class="code-hint">在手机上输入这个码 · <span id="ttl">' + left + '</span> 秒后失效</div>' +
+        (addrList ? '<div class="addr-box"><div class="addr-title">或手动填写地址</div>' + addrList + '</div>' : '')
+
+      bindCopyButtons()
       say('pair-msg', '')
       var timer = setInterval(function () {
         left -= 1
@@ -319,17 +363,22 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
   }
 
   // 复制连接地址：用户要把它填到手机里，手抄一串 ws:// 地址非常容易错
-  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
-    btn.addEventListener('click', function () {
-      var text = btn.getAttribute('data-copy')
-      var done = function () { var old = btn.textContent; btn.textContent = '已复制'; setTimeout(function () { btn.textContent = old }, 1200) }
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, function () { window.prompt('复制这个地址', text) })
-      } else {
-        window.prompt('复制这个地址', text)
-      }
+  function bindCopyButtons() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
+      if (btn.getAttribute('data-bound') === '1') return
+      btn.setAttribute('data-bound', '1')
+      btn.addEventListener('click', function () {
+        var text = btn.getAttribute('data-copy')
+        var done = function () { var old = btn.textContent; btn.textContent = '已复制'; setTimeout(function () { btn.textContent = old }, 1200) }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { window.prompt('复制这个地址', text) })
+        } else {
+          window.prompt('复制这个地址', text)
+        }
+      })
     })
-  })
+  }
+  bindCopyButtons()
 
   refreshStatus()
   refreshDevices()

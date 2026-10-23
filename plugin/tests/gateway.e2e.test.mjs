@@ -55,6 +55,10 @@ async function harness(t, overrides = {}) {
     ctx, cfg, lock, devices,
     hostId: 'h_e2e_test_host',
     dshVersion: '0.0.0-test',
+    // pair.start 会用 endpoints 生成候选地址与二维码。
+    // 少了它，handler 里 endpoints.map 会抛 host/internal——
+    // 这正是"给 handler 加依赖必须同步更新所有构造点"的教训。
+    endpoints: ['ws://127.0.0.1:7443/dshlink'],
     gateway: () => gateway,
   }
   gateway = await startGateway({
@@ -66,7 +70,7 @@ async function harness(t, overrides = {}) {
   })
 
   return {
-    dir, lock, devices, gateway, cfg,
+    dir, lock, devices, gateway, cfg, ctx,
     url: (token) => `ws://127.0.0.1:${gateway.port}/dshlink${token ? `?token=${token}` : ''}`,
     async cleanup() {
       await gateway.close()
@@ -294,7 +298,7 @@ await test('本机回环即使不在白名单也必须放行（否则绑 0.0.0.0
   const devices = new DeviceRegistry(join(dir, 'd.json'))
   await devices.load()
   let gw
-  const rc = { ctx, cfg, lock, devices, hostId: 'h_lb', dshVersion: 't', gateway: () => gw }
+  const rc = { ctx, cfg, lock, devices, hostId: 'h_lb', dshVersion: 't', endpoints: [], gateway: () => gw }
   gw = await startGateway({
     rc, handlers: createHandlers(), port: 0, host: '0.0.0.0', heartbeatMs: 60_000,
     // 关键：白名单里**故意**不放 127.0.0.1
@@ -310,6 +314,54 @@ await test('本机回环即使不在白名单也必须放行（否则绑 0.0.0.0
     await gw.close()
     await lock.dispose()
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+await test('pair.start 返回可用地址与二维码（App 靠它知道连哪里）', async () => {
+  const h = await harness()
+  const c = client(h.url())
+  try {
+    await c.ready
+    const out = await c.call('pair.start')
+    // 只回一个码是没用的：手机不知道宿主监听在哪
+    assert.equal(typeof out.wsUrl, 'string', '必须给首选连接地址')
+    assert.ok(Array.isArray(out.candidates) && out.candidates.length > 0, '必须有候选地址列表')
+    assert.equal(out.candidates[0].wsUrl, out.wsUrl, '首选地址应与 candidates[0] 一致')
+    // 二维码矩阵：前端靠着色，不需要引 QR 库
+    assert.ok(out.qr && Number.isInteger(out.qr.size), '必须返回二维码矩阵')
+    assert.equal(out.qr.modules.length, out.qr.size, '矩阵行数应等于 size')
+
+    // 每个候选的 URI 都必须能被解析回同一个地址（PC 生成 / 手机解析是跨设备契约）
+    const { decodePairUri } = await import('@dsh-link/protocol')
+    for (const candidate of out.candidates) {
+      const parsed = decodePairUri(candidate.uri)
+      assert.equal(parsed.ok, true, `URI 应可解析：${candidate.uri}`)
+      assert.equal(parsed.payload.code, out.code, '二维码里的码应与接口返回一致')
+    }
+  } finally {
+    c.close()
+    await h.cleanup()
+  }
+})
+
+await test('未生成码时不会凭空给出地址（地址必须与码成对）', async () => {
+  const h = await harness()
+  try {
+    // 直接调 handler，确认返回里的 code 与 wsUrl 同时存在
+    const handlers = createHandlers()
+    const rc = {
+      ctx: h.ctx, cfg: h.cfg, lock: h.lock, devices: h.devices,
+      hostId: 'h_pair', dshVersion: 't', endpoints: ['ws://10.0.0.9:7443/dshlink'],
+      gateway: () => h.gateway,
+    }
+    const out = await handlers['pair.start'](rc, {}, {
+      deviceId: 'unpaired', role: 'viewer', remoteAddress: '127.0.0.1', connId: 'c_x',
+    })
+    assert.match(out.code, /^\d{6}$/)
+    assert.equal(out.wsUrl, 'ws://10.0.0.9:7443/dshlink')
+    assert.equal(out.next, 'ask-owner', '手机自助配对必须等 PC 确认')
+  } finally {
+    await h.cleanup()
   }
 })
 
