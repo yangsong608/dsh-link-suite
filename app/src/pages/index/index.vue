@@ -11,11 +11,28 @@ import { onLoad } from '@dcloudio/uni-app'
 import PageShell from '@/components/PageShell.vue'
 import MossTerm from '@/components/moss/MossTerm.vue'
 import MossBoot from '@/components/moss/MossBoot.vue'
+import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, activeDevice, skinClass, themeClass, liteClass, type DeviceCard } from '@/core/store'
 import { haptic } from '@/core/haptic'
 import { connectDevice, refreshAll } from '@/core/link'
 
-const booting = ref(true)
+/**
+ * 启动动画只在**冷启动**播一次。
+ *
+ * 4.2 秒的动画作为"开机"是有质感的，但每次从别的 tab 切回首页都播一遍
+ * 就变成了阻碍——用户切 tab 是为了看设备列表，不是为了再看一次开机。
+ * 用模块级标记：页面重建时模块不重建，所以一次进程生命周期内只播一次。
+ */
+let bootPlayed = false
+const booting = ref(!bootPlayed)
+
+/**
+ * 是否有任何一台设备在干活。
+ *
+ * 取 runningCount 而不是 conn==='online'：角标的语义是"在干活"，
+ * 在线但空闲的机器不该亮红灯——那会让红灯变成常态，警示失效。
+ */
+const anyWorking = computed(() => state.devices.some((d) => (d.runningCount ?? 0) > 0))
 const refreshing = ref(false)
 
 const onlineCount = computed(() => state.devices.filter((d) => d.conn === 'online').length)
@@ -58,6 +75,11 @@ function usageLine(d: DeviceCard): string {
   if (d.sessionCount !== undefined) parts.push(`${d.sessionCount} 个会话`)
   if (d.runningCount !== undefined && d.runningCount > 0) parts.push(`${d.runningCount} 个运行中`)
   return parts.length > 0 ? parts.join(' · ') : '—'
+}
+
+function onBootDone(): void {
+  bootPlayed = true
+  booting.value = false
 }
 
 function open(d: DeviceCard): void {
@@ -104,6 +126,8 @@ const pairOpen = ref(false)
 const pairError = ref('')
 const pairBusy = ref(false)
 const pairInput = ref('')
+/** 输错时给输入框一个短抖动，见 finishPair */
+const pairShake = ref(false)
 const pairAddress = ref('')
 
 /** 还没配对过、也没有缓存地址时需要用户手填一次。 */
@@ -126,9 +150,13 @@ function closePair(): void {
 }
 
 async function finishPair(): Promise<void> {
+  if (pairBusy.value) return
   const code = pairInput.value.trim()
   if (!/^\d{6}$/.test(code)) {
     pairError.value = '请输入电脑上显示的 6 位数字'
+    // 输错时抖一下输入框：比只出一行红字更容易被注意到
+    pairShake.value = false
+    requestAnimationFrame(() => { pairShake.value = true })
     return
   }
 
@@ -205,16 +233,13 @@ onLoad(() => {
 
 <template>
   <PageShell active="devices" @tab="goTab">
-    <MossBoot
-      v-if="booting"
-      :host-count="onlineCount"
-      :last-name="activeDevice?.name ?? ''"
-      @done="booting = false"
-    />
+    <!-- 启动页不接收任何设备信息：它是每次冷启动都会出现的公开画面。 -->
+    <MossBoot v-if="booting" @done="onBootDone" />
 
     <view class="head safe-top">
       <view class="brand">
-        <text class="logo mono">DSH<text class="logo-acc">LINK</text></text>
+        <MossBadge :size="26" :working="anyWorking" :glow="!state.lite" />
+        <text class="logo mono">MOSS<text class="logo-acc">LINK</text></text>
         <text class="ver mono">v0.1.0</text>
       </view>
       <view class="actions">
@@ -336,6 +361,7 @@ onLoad(() => {
           <input
             v-model="pairInput"
             class="pair-input mono"
+            :class="{ 'shake': pairShake }"
             type="number"
             maxlength="6"
             placeholder="000000"
@@ -357,7 +383,13 @@ onLoad(() => {
 
           <view class="dlg-row">
             <view class="btn ghost" @tap="closePair">取消</view>
-            <view class="btn primary" @tap="finishPair">
+            <!-- 忙碌时必须视觉禁用：只改文案的话，用户会以为没点上而反复点，
+                 结果是重复配对请求。:class 与 pointer-events 一起给。 -->
+            <view
+              class="btn primary"
+              :class="{ 'is-disabled': pairBusy }"
+              @tap="finishPair"
+            >
               {{ pairBusy ? '配对中…' : '配对' }}
             </view>
           </view>
@@ -372,10 +404,14 @@ onLoad(() => {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  padding: 0 16px 6px;
+  padding-right: 16px;
+  padding-bottom: 6px;
+  padding-left: 16px;
+  /* 刻意不用 padding 简写：简写会把 padding-top 重置为 0，
+     覆盖掉 .head 上的 .safe-top（状态栏安全区）。 */
 }
 
-.brand { display: flex; align-items: baseline; gap: 8px; }
+.brand { display: flex; align-items: center; gap: 8px; }
 
 .logo {
   font-size: 19px;
@@ -508,13 +544,10 @@ onLoad(() => {
  * 实心 --acc 在 MOSS 皮肤下是荧光绿，放在红框里像另一个 App 的按钮；
  * 而"请求解锁"是有副作用的一次远程动作，不该是全屏最亮的元素（docs/06 §9）。
  */
-.btn.alert {
-  background: var(--danger-soft);
-  border-color: var(--danger-bd);
-  color: var(--danger);
-  font-weight: 600;
-  padding: 0 20px;
-}
+/* .btn 的基础样式与 .btn.alert 的红描边定义在 moss.scss（单一来源）。
+   这里只补"这一处需要更宽"的差异，不重复颜色——两处都写颜色，
+   改主题时必然有一处忘了改。 */
+.btn.alert { font-weight: 600; padding: 0 20px; }
 
 .adder {
   margin: 14px 4px 0;
@@ -540,6 +573,16 @@ onLoad(() => {
   opacity: 0.7;
 }
 
+/**
+ * 弹窗遮罩。
+ *
+ * 两个修正：
+ *   1. 底部内边距用 --safe-bottom-real 而不是裸 env()：Android 上
+ *      env(safe-area-inset-bottom) 是 0，弹窗会直接贴到屏幕底边，
+ *      在全面屏手势条上方显得"被切掉了"。
+ *   2. 弹窗限制最大高度并允许内部滚动：配对面板在横屏/小屏上会超出，
+ *      超出后底部按钮点不到——这是最典型的"按钮点不着"。
+ */
 .mask {
   position: fixed;
   inset: 0;
@@ -547,10 +590,19 @@ onLoad(() => {
   background: rgba(0, 0, 0, 0.62);
   display: flex;
   align-items: flex-end;
-  padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px);
+  justify-content: center;
+  padding: 16px 16px calc(var(--safe-bottom-real, 16px) + 16px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
-.dialog { width: 100%; animation: fadeIn var(--t-mid) var(--ease-out); }
+.dialog {
+  width: 100%;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  animation: fadeIn var(--t-mid) var(--ease-out);
+}
 .dlg-t { font-size: 15px; font-weight: 600; }
 .dlg-d { display: block; margin-top: 8px; font-size: 12.5px; line-height: 19px; }
 .dlg-row { display: flex; gap: 10px; margin-top: 16px; }

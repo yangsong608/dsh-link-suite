@@ -18,6 +18,10 @@ window.__ModuleLoader__.load({
     var exports = module.exports
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
 
+    // dsh 的浏览器半跑在 React 里。设置面板必须用 React 渲染才能插进 slots
+    // 的渲染树；锁层是直接操作 DOM 的（它要覆盖整个页面，不需要参与 React）。
+    var React = require('react')
+
     var BASE = '/dsh-link'
     var ROOT_ID = 'dsh-link-lock'
     var POLL_MS = 1000
@@ -155,14 +159,49 @@ window.__ModuleLoader__.load({
       bar.innerHTML = [
         '<span style="flex:none;color:#e8c24a">!</span>',
         '<span style="flex:1">锁屏未生效：还没有设置密码。</span>',
-        '<button type="button" style="flex:none;height:30px;padding:0 12px;border-radius:6px;cursor:pointer;',
+        '<button type="button" data-act="pw" style="flex:none;height:30px;padding:0 12px;border-radius:6px;cursor:pointer;',
         'border:1px solid rgba(232,194,74,.5);background:rgba(60,46,12,.9);color:#f0e2b8;',
-        "font:inherit\">设置密码</button>"
+        'font:inherit">设置密码</button>',
+        '<button type="button" data-act="setup" style="flex:none;height:30px;padding:0 12px;border-radius:6px;',
+        'cursor:pointer;border:1px solid rgba(232,194,74,.3);background:transparent;color:#f0e2b8;',
+        'font:inherit">全部设置</button>'
       ].join('')
-      bar.querySelector('button').addEventListener('click', function () {
+      bar.querySelector('[data-act="pw"]').addEventListener('click', function () {
         openPasswordSetup(bar)
       })
+      // 配对与设备管理只在设置页里有——不从提示条给出入口，用户根本找不到
+      bar.querySelector('[data-act="setup"]').addEventListener('click', function () {
+        window.open(BASE + '/setup', '_blank', 'noopener')
+      })
       document.body.appendChild(bar)
+    }
+
+    // ── 常驻设置入口 ────────────────────────────────────────────────────────
+    // 只在"未武装"时提示是不够的：用户设好密码之后仍然需要配对设备、撤销设备。
+    // 一个 28px 的小胶囊，右下角，不抢焦点、不挡内容。
+    var PILL_ID = ROOT_ID + '-pill'
+
+    function syncSetupPill() {
+      if (document.getElementById(PILL_ID)) return
+      var pill = document.createElement('button')
+      pill.id = PILL_ID
+      pill.type = 'button'
+      pill.title = 'MOSS Link 设置（配对设备、锁屏密码）'
+      pill.textContent = 'LINK'
+      pill.style.cssText = [
+        'position:fixed;right:14px;bottom:14px;z-index:2147483000',
+        'height:26px;padding:0 10px;border-radius:13px;cursor:pointer',
+        'border:1px solid rgba(70,227,166,.32);background:rgba(11,18,16,.86)',
+        'color:rgba(230,243,236,.62);font:10px/1 ui-monospace,"SF Mono",Menlo,monospace',
+        'letter-spacing:1.4px;opacity:.55;transition:opacity .18s,color .18s',
+        'backdrop-filter:blur(6px)'
+      ].join(';')
+      pill.addEventListener('mouseenter', function () { pill.style.opacity = '1'; pill.style.color = '#46e3a6' })
+      pill.addEventListener('mouseleave', function () { pill.style.opacity = '.55'; pill.style.color = 'rgba(230,243,236,.62)' })
+      pill.addEventListener('click', function () {
+        window.open(BASE + '/setup', '_blank', 'noopener')
+      })
+      document.body.appendChild(pill)
     }
 
     /** 首次设置密码的极简对话框：只问一个字段，按回车提交。 */
@@ -179,7 +218,7 @@ window.__ModuleLoader__.load({
         'border:1px solid rgba(232,194,74,.4);background:#141009;color:#f2eae4;',
         'font:13px/1.6 ui-monospace,\'SF Mono\',Menlo,monospace">',
         '<div style="font-size:12px;letter-spacing:.14em;color:rgba(240,226,184,.7);margin-bottom:10px">',
-        'DSH-LINK / 设置锁屏密码</div>',
+        'MOSS-LINK / 设置锁屏密码</div>',
         '<input type="password" autocomplete="new-password" placeholder="至少 8 位"',
         ' style="width:100%;height:40px;padding:0 12px;border-radius:6px;box-sizing:border-box;',
         'border:1px solid rgba(232,194,74,.35);background:#0b0805;color:#f2eae4;font:inherit;outline:none">',
@@ -237,7 +276,7 @@ window.__ModuleLoader__.load({
       root.innerHTML = [
         '<div class="veil"></div>',
         '<div class="card" role="document">',
-        '  <div class="bar"><span class="dot"></span><b>DSH-LINK / HOST</b><span class="tag">LOCKED</span></div>',
+        '  <div class="bar"><span class="dot"></span><b>MOSS-LINK / HOST</b><span class="tag">LOCKED</span></div>',
         '  <div class="emblem">▲</div>',
         '  <div class="sub">SESSION SUSPENDED</div>',
         '  <div class="field"><div class="dots"></div></div>',
@@ -418,6 +457,33 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
+      // 注册设置页区块：这是"配置入口应该在哪"的正确答案。
+      // dsh 的 slots 机制让插件把面板放进设置侧栏，与系统设置同级；
+      // 独立 HTTP 页面（/dsh-link/setup）保留为无 JS 环境的兜底。
+      // 必须走 ctx.get('slots', false) 软读：cordis 4 的严格代理下
+      // 直接读 ctx.slots 会抛 "cannot get property without inject"，
+      // 而且即使服务存在也会抛——那会把整条 apply 打断，锁层跟着不挂载。
+      try {
+        var slots = ctx.get('slots', false)
+        if (slots && typeof slots.inject === 'function') {
+          slots.inject('settings.section', function () {
+            return slots.register({
+              name: 'settings.section',
+              id: 'dsh-link',
+              order: 120,
+              label: 'MOSS Link',
+              // 五份 props 契约里的 inject 份额是必填的：没有它注册会抛。
+              // 面板只需要两个宿主能力，其余从 HTTP 面自取。
+              inject: function () { return {} }
+            }, function () { return e(LinkSettings, {}) })
+          })
+        }
+      } catch (err) {
+        // 设置页不可用（老版本 dsh / slots 缺失）时不能让整条 apply 断掉：
+        // 锁层与活动上报都在同一个 apply 里，抛出去等于整套功能消失。
+        try { console.warn('[dsh-link] 设置面板未注册：', err && err.message) } catch (_) { /* noop */ }
+      }
+
       // 全局快捷键（⌘K / ⌘P / ⌘⇧L…）在锁定时必须全部吞掉
       window.addEventListener('keydown', function (e) {
         if (!document.getElementById(ROOT_ID)) return
@@ -452,6 +518,8 @@ window.__ModuleLoader__.load({
       })
       reportActivity()
 
+      syncSetupPill()
+
       // 有钱能使鬼推磨，但没网络不能解锁：先拉一次，再按 1s 轮询
       poll()
       state.poll = setInterval(poll, POLL_MS)
@@ -463,12 +531,301 @@ window.__ModuleLoader__.load({
           window.removeEventListener('keydown', onActivity, true)
           window.removeEventListener('wheel', onActivity, true)
           window.removeEventListener('touchstart', onActivity, true)
+          var pill = document.getElementById(PILL_ID)
+          if (pill) pill.remove()
           unmount()
         }
       }, 'dsh-link: lock overlay + activity')
     }
 
+
+    // ── 设置面板（注册进 dsh 设置页）─────────────────────────────────────────
+    // 样式与结构对齐 dsh-startup-moss 的配置面板：不硬编码颜色，全部走
+    // --dsw-alias-* 主题变量。这样它跟随 dsh 的明暗与主题，看起来像原生设置项，
+    // 而不是"一个被塞进来的网页"。
+    var e = React.createElement
+
+    var PANEL_CSS = [
+      '.__dl_root{max-width:660px;display:flex;flex-direction:column;gap:14px;font-size:13px;color:var(--dsw-alias-label-primary)}',
+      '.__dl_intro{display:flex;align-items:center;gap:10px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}',
+      '.__dl_badge{font-family:ui-monospace,Menlo,monospace;border:1px solid var(--dsw-alias-border-l2);border-radius:5px;padding:1px 7px;color:var(--dsw-alias-brand-primary)}',
+      '.__dl_group{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:13px 15px;display:flex;flex-direction:column;gap:12px;background:var(--dsw-alias-bg-layer-1)}',
+      '.__dl_title{font-size:11px;font-weight:600;letter-spacing:.10em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}',
+      '.__dl_row{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}',
+      '.__dl_label{display:flex;flex-direction:column;gap:3px}',
+      '.__dl_name{font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.__dl_hint{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-tertiary)}',
+      '.__dl_input{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:7px 10px;font-size:13px;box-sizing:border-box;width:100%;outline:none}',
+      '.__dl_input:focus{border-color:var(--dsw-alias-brand-primary)}',
+      '.__dl_btn{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 14px;font:inherit;font-size:12.5px;cursor:pointer}',
+      '.__dl_btn:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary)}',
+      '.__dl_btn:disabled{opacity:.5;cursor:default}',
+      '.__dl_btnPri{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-foreground)}',
+      '.__dl_btnDanger{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
+      '.__dl_status{font-size:12px;color:var(--dsw-alias-label-tertiary);min-height:18px}',
+      '.__dl_ok{color:var(--dsw-alias-state-success-primary)}',
+      '.__dl_err{color:var(--dsw-alias-state-error-primary)}',
+      '.__dl_note{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary);border-left:2px solid var(--dsw-alias-border-l3);padding-left:9px}',
+      '.__dl_code{font-family:ui-monospace,Menlo,monospace;font-size:26px;letter-spacing:9px;font-weight:700;color:var(--dsw-alias-brand-primary);text-align:center;padding:12px 0 2px}',
+      '.__dl_codeHint{font-size:11px;color:var(--dsw-alias-label-tertiary);text-align:center}',
+      '.__dl_dev{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--dsw-alias-border-l1)}',
+      '.__dl_dev:first-of-type{border-top:0}',
+      '.__dl_devName{font-size:12.5px;color:var(--dsw-alias-label-primary)}',
+      '.__dl_devMeta{font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:2px}',
+      '.__dl_btns{display:flex;gap:8px;flex-wrap:wrap}',
+      '.__dl_two{display:grid;grid-template-columns:1fr 1fr;gap:10px}',
+      '@media (max-width:620px){.__dl_two{grid-template-columns:1fr}}'
+    ].join('')
+
+    var PANEL_STYLE_ID = 'dsh-link/panel.css'
+    try {
+      if (typeof document !== 'undefined' && document.querySelector('style[data-plugin-css="' + PANEL_STYLE_ID + '"]') === null) {
+        var panelStyle = document.createElement('style')
+        panelStyle.dataset.plugin = 'dsh-link'
+        panelStyle.dataset.pluginCss = PANEL_STYLE_ID
+        panelStyle.textContent = PANEL_CSS
+        document.head.appendChild(panelStyle)
+      }
+    } catch (err) {
+      // 样式注入失败时面板仍然可用，只是没有外观
+    }
+
+    function usePanelApi() {
+      return React.useMemo(function () {
+        function call(path, body, method) {
+          var opt = { method: method || (body === undefined ? 'GET' : 'POST') }
+          if (body !== undefined) {
+            opt.headers = { 'content-type': 'application/json' }
+            opt.body = JSON.stringify(body)
+          }
+          return fetch(BASE + path, Object.assign({ credentials: 'same-origin' }, opt))
+            .then(function (r) {
+              return r.json().then(function (j) { return { status: r.status, body: j } })
+            })
+            .catch(function (err) { return { status: 0, body: { error: String(err) } } })
+        }
+        return {
+          status: function () { return call('/lock') },
+          setPassword: function (next, current) { return call('/lock/password', { next: next, current: current }) },
+          clearPassword: function (current) { return call('/lock/password', { current: current }, 'DELETE') },
+          lockNow: function () { return call('/lock', { action: 'lock' }) },
+          startPair: function () { return call('/pair/start', {}) },
+          devices: function () { return call('/pair/devices') },
+          revoke: function (deviceId) { return call('/pair/revoke', { deviceId }) }
+        }
+      }, [])
+    }
+
+    function LinkSettings() {
+      var api = usePanelApi()
+      var st = React.useState({ armed: false, hasPassword: false, locked: false, connections: 0 })
+      var status = st[0], setStatus = st[1]
+      var pw = React.useState({ next: '', current: '', msg: '', kind: '' })
+      var pwState = pw[0], setPw = pw[1]
+      var pair = React.useState({ code: '', left: 0, msg: '', kind: '' })
+      var pairState = pair[0], setPair = pair[1]
+      var dev = React.useState({ list: [], msg: '', kind: '' })
+      var devState = dev[0], setDev = dev[1]
+
+      var loadStatus = React.useCallback(function () {
+        api.status().then(function (out) {
+          if (out.status === 200) setStatus(out.body)
+        })
+      }, [api])
+
+      var loadDevices = React.useCallback(function () {
+        api.devices().then(function (out) {
+          if (out.status === 200) setDev(function (d) { return Object.assign({}, d, { list: out.body.devices || [] }) })
+        })
+      }, [api])
+
+      React.useEffect(function () {
+        loadStatus()
+        loadDevices()
+        // 只在挂载时读一次：设置面板的信息不需要实时刷新，
+        // 每秒轮询会让它在后台一直发请求。
+      }, [loadStatus, loadDevices])
+
+      React.useEffect(function () {
+        if (pairState.left <= 0) return
+        var t = setTimeout(function () {
+          setPair(function (p) { return Object.assign({}, p, { left: p.left - 1 }) })
+        }, 1000)
+        return function () { clearTimeout(t) }
+      }, [pairState.left])
+
+      function savePassword() {
+        if (pwState.next.length < 8) {
+          setPw(function (p) { return Object.assign({}, p, { msg: '密码至少 8 位', kind: 'err' }) })
+          return
+        }
+        api.setPassword(pwState.next, status.hasPassword ? pwState.current : undefined).then(function (out) {
+          if (out.status === 200) {
+            setPw(function (p) { return Object.assign({}, p, { next: '', current: '', msg: '已保存，锁屏生效', kind: 'ok' }) })
+            loadStatus()
+          } else {
+            setPw(function (p) { return Object.assign({}, p, { msg: (out.body && out.body.error) || '保存失败', kind: 'err' }) })
+          }
+        })
+      }
+
+      function clearPassword() {
+        if (pwState.current.length === 0) {
+          setPw(function (p) { return Object.assign({}, p, { msg: '先在「当前密码」里填入', kind: 'err' }) })
+          return
+        }
+        api.clearPassword(pwState.current).then(function (out) {
+          if (out.status === 200) {
+            setPw(function (p) { return Object.assign({}, p, { current: '', msg: '已清除，锁屏不再生效', kind: 'ok' }) })
+            loadStatus()
+          } else {
+            setPw(function (p) { return Object.assign({}, p, { msg: (out.body && out.body.error) || '清除失败', kind: 'err' }) })
+          }
+        })
+      }
+
+      function makePair() {
+        api.startPair().then(function (out) {
+          if (out.status !== 200) {
+            setPair(function (p) { return Object.assign({}, p, { msg: '生成失败', kind: 'err' }) })
+            return
+          }
+          var left = Math.max(0, Math.round((out.body.expiresAt - Date.now()) / 1000))
+          setPair({ code: out.body.code, left: left, msg: '', kind: '' })
+        })
+      }
+
+      function revoke(deviceId) {
+        api.revoke(deviceId).then(function (out) {
+          if (out.status === 200) {
+            setDev(function (d) { return Object.assign({}, d, { msg: '已撤销', kind: 'ok' }) })
+            loadDevices()
+            loadStatus()
+          } else {
+            setDev(function (d) { return Object.assign({}, d, { msg: (out.body && out.body.error) || '撤销失败', kind: 'err' }) })
+          }
+        })
+      }
+
+      return e('div', { className: '__dl_root' },
+        // ── 头部 ──
+        e('div', { className: '__dl_intro' },
+          e('span', { className: '__dl_badge' }, 'MOSS'),
+          e('span', null, 'LINK · 远程访问与锁屏')
+        ),
+        e('div', { className: '__dl_group' },
+          e('div', { className: '__dl_row' },
+            e('div', { className: '__dl_label' },
+              e('span', { className: '__dl_name' }, '锁屏状态'),
+              e('span', { className: '__dl_hint' },
+                status.armed ? '已启用' : '未生效（未设置密码）',
+                ' · ',
+                status.locked ? '已锁定' : '未锁',
+                ' · 在线设备 ' + String(status.connections || 0))
+            ),
+            e('div', { className: '__dl_btns' },
+              e('button', {
+                type: 'button', className: '__dl_btn',
+                onClick: function () { api.lockNow().then(function () { loadStatus() }) }
+              }, '立即锁定')
+            )
+          ),
+          e('div', { className: '__dl_note' },
+            '锁的是 dsh 的操作能力，不是操作系统登录屏。正在运行的任务不会因为锁屏而暂停。')
+        ),
+
+        // ── 密码 ──
+        e('div', { className: '__dl_group' },
+          e('div', { className: '__dl_title' }, '锁屏密码'),
+          status.hasPassword
+            ? e('div', { className: '__dl_two' },
+                e('label', { className: '__dl_label' },
+                  e('span', { className: '__dl_hint' }, '新密码（至少 8 位）'),
+                  e('input', {
+                    className: '__dl_input', type: 'password', autoComplete: 'new-password',
+                    value: pwState.next,
+                    onChange: function (ev) { setPw(function (p) { return Object.assign({}, p, { next: ev.target.value }) }) }
+                  })
+                ),
+                e('label', { className: '__dl_label' },
+                  e('span', { className: '__dl_hint' }, '当前密码'),
+                  e('input', {
+                    className: '__dl_input', type: 'password', autoComplete: 'current-password',
+                    value: pwState.current,
+                    onChange: function (ev) { setPw(function (p) { return Object.assign({}, p, { current: ev.target.value }) }) }
+                  })
+                )
+              )
+            : e('label', { className: '__dl_label' },
+                e('span', { className: '__dl_hint' }, '设置密码后锁屏才会生效'),
+                e('input', {
+                  className: '__dl_input', type: 'password', autoComplete: 'new-password',
+                  placeholder: '至少 8 位',
+                  value: pwState.next,
+                  onChange: function (ev) { setPw(function (p) { return Object.assign({}, p, { next: ev.target.value }) }) }
+                })
+              ),
+          e('div', { className: '__dl_btns' },
+            e('button', { type: 'button', className: '__dl_btn __dl_btnPri', onClick: savePassword },
+              status.hasPassword ? '修改密码' : '设置密码'),
+            status.hasPassword
+              ? e('button', { type: 'button', className: '__dl_btn __dl_btnDanger', onClick: clearPassword }, '清除密码')
+              : null
+          ),
+          pwState.msg
+            ? e('div', { className: '__dl_status ' + (pwState.kind === 'ok' ? '__dl_ok' : '__dl_err') }, pwState.msg)
+            : null
+        ),
+
+        // ── 配对 ──
+        e('div', { className: '__dl_group' },
+          e('div', { className: '__dl_title' }, '配对新设备'),
+          e('div', { className: '__dl_hint' },
+            '生成 6 位码，在手机 App 的「添加电脑」里输入。码 2 分钟内有效，只能用一次。'),
+          pairState.code && pairState.left > 0
+            ? e('div', null,
+                e('div', { className: '__dl_code' }, pairState.code),
+                e('div', { className: '__dl_codeHint' }, String(pairState.left) + ' 秒后失效'))
+            : pairState.code
+              ? e('div', { className: '__dl_hint' }, '配对码已过期，请重新生成')
+              : null,
+          e('div', { className: '__dl_btns' },
+            e('button', { type: 'button', className: '__dl_btn __dl_btnPri', onClick: makePair }, '生成配对码')
+          ),
+          pairState.msg
+            ? e('div', { className: '__dl_status __dl_err' }, pairState.msg)
+            : null
+        ),
+
+        // ── 设备 ──
+        e('div', { className: '__dl_group' },
+          e('div', { className: '__dl_title' }, '已配对设备'),
+          devState.list.length === 0
+            ? e('div', { className: '__dl_hint' }, '还没有配对任何设备')
+            : devState.list.map(function (d) {
+                return e('div', { key: d.deviceId, className: '__dl_dev' },
+                  e('div', null,
+                    e('div', { className: '__dl_devName' }, d.label),
+                    e('div', { className: '__dl_devMeta' }, (d.platform || '?') + ' · ' + d.role)
+                  ),
+                  e('button', {
+                    type: 'button', className: '__dl_btn __dl_btnDanger',
+                    onClick: function () { revoke(d.deviceId) }
+                  }, '撤销')
+                )
+              }),
+          e('div', { className: '__dl_note' },
+            '撤销后该设备的令牌立即失效，正在连接的也会被断开。'),
+          devState.msg
+            ? e('div', { className: '__dl_status ' + (devState.kind === 'ok' ? '__dl_ok' : '__dl_err') }, devState.msg)
+            : null
+        )
+      )
+    }
+
     exports.apply = apply
+    // 刻意留空：slots 只用来注册设置面板，缺了它锁层仍要工作。
+    // 声明 inject 会让"没有 slots 的组合"直接不加载这个插件——锁屏就没了。
     exports.inject = []
     return module.exports
   }

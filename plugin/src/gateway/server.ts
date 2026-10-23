@@ -75,6 +75,13 @@ export interface GatewayOptions {
   readonly heartbeatMs: number
   /** 额外允许的 Origin（dsh 自己的域名 / 反代地址）。 */
   readonly allowedOrigins?: readonly string[]
+  /**
+   * 允许被连接的本机地址（绑 0.0.0.0 时必填）。
+   *
+   * 没有它，监听会落到 VPN、docker、甚至公网网卡上。每次建连都用
+   * `socket.localAddress` 重算，所以 DHCP 换地址后不需要重启。
+   */
+  readonly allowedLocalAddresses?: readonly string[]
 }
 
 export interface Gateway {
@@ -101,7 +108,7 @@ export interface Gateway {
 }
 
 export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
-  const { rc, handlers, port, host, heartbeatMs } = opts
+  const { rc, handlers, port, host, heartbeatMs, allowedLocalAddresses } = opts
   const allowedOrigins = [...defaultAllowedOrigins(), ...(opts.allowedOrigins ?? [])]
   const admission = new AdmissionControl()
   const conns = new Map<string, Conn>()
@@ -116,10 +123,14 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       return
     }
     res.writeHead(426, { 'content-type': 'text/plain; charset=utf-8', upgrade: 'websocket' })
-    res.end('DSH Link gateway speaks WebSocket only\n')
+    res.end('MOSS Link gateway speaks WebSocket only\n')
   })
 
-  const wss = new WebSocketServer({ server: http, path: '/dshlink' })
+  // noServer：由我们自己决定"哪些 upgrade 能完成握手"。
+  // 用 `{ server: http }` 时 ws 会注册**自己的** upgrade 监听器，我们旁听时
+  // 拒绝一个连接（destroy socket）之后它仍会照常完成握手——限速与 Origin
+  // 校验于是变成"只写日志、不挡人"。noServer + handleUpgrade 是唯一可靠写法。
+  const wss = new WebSocketServer({ noServer: true, path: '/dshlink' })
 
   /**
    * HTTP upgrade 阶段就把明显不该放的连接挡掉。
@@ -127,8 +138,29 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
    * 放在这里而不是 `connection` 事件之后：到这里还没分配任何连接对象、没注册
    * 任何监听器，拒绝的成本最低。Origin 与建连限额都在这一层判断。
    */
-  http.on('upgrade', (req, socket) => {
+  http.on('upgrade', (req, socket, head) => {
     const ip = req.socket.remoteAddress ?? 'unknown'
+
+    // ① 本机地址白名单：挡掉"连到了不该被连的网卡"这种情况。
+    //    放在最前面，因为它是纯本地判断，不依赖任何请求内容。
+    //
+    //    回环永远放行：白名单只来自非回环网卡，而本机浏览器/调试客户端
+    //    连的就是 127.0.0.1。少了这一句，绑 0.0.0.0 之后本机自己也连不上。
+    const local = req.socket.localAddress
+    const loopbackLocal = typeof local === 'string' && (local === '::1' || local.startsWith('127.'))
+    if (
+      allowedLocalAddresses !== undefined &&
+      allowedLocalAddresses.length > 0 &&
+      typeof local === 'string' &&
+      !loopbackLocal &&
+      !allowedLocalAddresses.includes(local)
+    ) {
+      rc.ctx.logger?.warn('[dsh-link] 拒绝连接：本机地址 %s 不在白名单', local)
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
     if (!checkOrigin(req.headers.origin, allowedOrigins, req.headers.host)) {
       rc.ctx.logger?.warn('[dsh-link] 拒绝来源 %s（Origin %s）', ip, req.headers.origin ?? '?')
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
@@ -155,20 +187,18 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       rc.ctx.logger?.warn('[dsh-link] 拒绝连接 %s：%s', ip, verdict.reason)
       socket.write(`HTTP/1.1 ${String(verdict.code)} Too Many Requests\r\nConnection: close\r\n\r\n`)
       socket.destroy()
+      // 必须 return：ws 的 upgrade 监听器是**独立注册**的，我们只是"旁听"。
+      // 不 return 的话，后面的代码仍会把 socket 标记为已受理，而 ws 也会照常
+      // 完成握手——限速就变成了只写日志、不挡人。
+      return
     }
-    // 通过时不做任何事：WebSocketServer 自己的 upgrade 监听会接管。
-    // 但额度已经在上面扣了，所以 connection 事件里不能再重复扣。
-    const carrier = socket as { __dshLinkAdmitted?: boolean; __dshLinkDevice?: { id: string; role: DeviceRole; label: string } }
-    carrier.__dshLinkAdmitted = verdict.ok
-    // 令牌有效就记在 socket 上，connection 事件里直接升格为已认证——
-    // 已配对设备重连不该再走一次配对流程。
-    if (authenticated !== undefined) {
-      carrier.__dshLinkDevice = {
-        id: authenticated.deviceId,
-        role: authenticated.role,
-        label: authenticated.label,
-      }
-    }
+    // 三道闸门都过了：交给 ws 完成握手，并把认证信息随 socket 带过去。
+    // 已经扣过额度，connection 事件里不再重复扣。
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      // ws 的 connection 事件签名只声明 (ws, req)；认证信息用第三个参数带过去，
+      // 由下方的监听器按 `KnownDevice | undefined` 读取。
+      ;(wss.emit as (event: string, ...args: unknown[]) => boolean)('connection', ws, req, authenticated)
+    })
   })
 
   const send = (conn: Conn, frame: Frame): void => {
@@ -250,37 +280,22 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
     }
   }
 
-  wss.on('connection', (ws, req) => {
+  type KnownDevice = { deviceId: string; role: DeviceRole; label: string }
+  const onConnection = (ws: WebSocket, req: import('node:http').IncomingMessage, known?: KnownDevice): void => {
     const ip = req.socket.remoteAddress ?? 'unknown'
-    const admitted = (req.socket as { __dshLinkAdmitted?: boolean }).__dshLinkAdmitted === true
-    if (!admitted) {
-      // 理论上不会走到这里：upgrade 阶段已经挡住。留着是为了失败关闭，
-      // 避免将来改动 upgrade 逻辑时出现"未限额但放行"的缺口。
-      ws.close(1008, 'not admitted')
-      return
-    }
-
     const conn: Conn = {
       id: `c_${nextId++}`,
       ws,
       ip,
-      deviceId: 'unpaired',
-      label: '',
-      role: 'viewer',
-      authenticated: false,
+      // 已配对设备带 token 重连：直接升格，不必再配对。
+      deviceId: known?.deviceId ?? 'unpaired',
+      label: known?.label ?? '',
+      role: known?.role ?? 'viewer',
+      authenticated: known !== undefined,
       alive: true,
       seq: 0,
       preAuthTimer: undefined,
     }
-    // 已配对设备带 token 重连：直接升格，不必再配对
-    const known = (req.socket as { __dshLinkDevice?: { id: string; role: DeviceRole; label: string } }).__dshLinkDevice
-    if (known !== undefined) {
-      conn.deviceId = known.id
-      conn.role = known.role
-      conn.label = known.label
-      conn.authenticated = true
-    }
-
     conns.set(conn.id, conn)
     rc.ctx.logger?.info(
       '[dsh-link] 连接来自 %s（%s，%s）',
@@ -339,11 +354,8 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       rc.ctx.logger?.warn('[dsh-link] socket 错误 %s: %s', conn.id, err.message)
     })
 
-    // 认证成功的连接要把 preAuthTimer 清掉：由 pair.finish 的 handler 调用
-    conn.ws.on('close', () => {
-      if (conn.preAuthTimer) clearTimeout(conn.preAuthTimer)
-    })
-  })
+  }
+  wss.on('connection', onConnection as never)
 
   /**
    * 供 pair.finish 使用：把一条连接升格为已认证。

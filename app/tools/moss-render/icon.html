@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0;overflow:hidden;background:transparent}
+  #stage{display:block}
+</style></head>
+<body>
+<canvas id="stage" width="1024" height="1024"></canvas>
+<script>
+// 启动图标：用渲染好的主体图 + 深色渐变底 + 青色描边
+// 直接 canvas 合成，不依赖任何图片库
+const size = 1024
+const c = document.getElementById('stage')
+const ctx = c.getContext('2d')
+
+// 底：深青黑渐变（与 App 的 MOSS 皮肤一致）
+const g = ctx.createRadialGradient(size * 0.5, size * 0.38, size * 0.05, size * 0.5, size * 0.5, size * 0.72)
+g.addColorStop(0, '#0d1a15')
+g.addColorStop(0.55, '#070d0b')
+g.addColorStop(1, '#030605')
+ctx.fillStyle = g
+ctx.fillRect(0, 0, size, size)
+
+// 极淡的扫描线：和启动页的 CRT 质感呼应
+ctx.globalAlpha = 0.05
+ctx.fillStyle = '#46e3a6'
+for (let y = 0; y < size; y += 6) ctx.fillRect(0, y, size, 1)
+ctx.globalAlpha = 1
+
+// 边缘光晕
+const glow = ctx.createRadialGradient(size * 0.5, size * 0.5, size * 0.28, size * 0.5, size * 0.5, size * 0.55)
+glow.addColorStop(0, 'rgba(70,227,166,0)')
+glow.addColorStop(1, 'rgba(70,227,166,0.10)')
+ctx.fillStyle = glow
+ctx.fillRect(0, 0, size, size)
+
+window.__looksReady = true
+window.__drawMoss = (dataUrl) => new Promise((resolve) => {
+  const img = new Image()
+  img.onload = () => {
+    // 主体占画面 62%，居中偏上一点（下方留出安全区给 Android 自适应图标裁切）
+    const target = size * 0.62
+    const scale = Math.min(target / img.width, target / img.height)
+    const w = img.width * scale
+    const h = img.height * scale
+    ctx.drawImage(img, (size - w) / 2, (size - h) / 2 - size * 0.02, w, h)
+    resolve(c.toDataURL('image/png'))
+  }
+  img.onerror = () => resolve(null)
+  img.src = dataUrl
+})
+</script>
+</body></html>

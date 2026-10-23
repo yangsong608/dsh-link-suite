@@ -10,7 +10,7 @@
  */
 import { computed } from 'vue'
 import PageShell from '@/components/PageShell.vue'
-import { state, skin, type SkinMode } from '@/core/store'
+import { state, skin, markUserPreference, type SkinMode } from '@/core/store'
 import { haptic } from '@/core/haptic'
 
 const skins: { key: SkinMode; name: string; desc: string; dot: string }[] = [
@@ -30,19 +30,24 @@ const skinLabel = computed(() => {
   return state.skinMode === 'auto' ? `跟随 · ${resolved}` : resolved
 })
 
+// 每次改动都标记为"用户亲手选的"：这一位决定冷启动时是否跟随系统主题。
+// 少了它，浅色模式当时生效、重启被系统改回——表现为"配置没生效"。
 function pickSkin(k: SkinMode): void {
   haptic('light')
   state.skinMode = k
+  markUserPreference('skin')
 }
 
 function toggleLight(): void {
   haptic('light')
   state.light = !state.light
+  markUserPreference('light')
 }
 
 function toggleLite(): void {
   haptic('light')
   state.lite = !state.lite
+  markUserPreference('lite')
 }
 
 function goTab(tab: 'devices' | 'sessions' | 'me'): void {
@@ -52,7 +57,7 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 
 function about(): void {
   uni.showModal({
-    title: 'DSH Link 0.1.0',
+    title: 'MOSS LINK 0.1.0',
     content: '数据不经过任何服务器。\n锁屏挡住的是人，不是进程。',
     showCancel: false,
     confirmText: '知道了',
@@ -143,10 +148,19 @@ function about(): void {
       <view class="panel">
         <view class="opt" @tap="about">
           <view class="opt-body">
-            <text class="opt-n">DSH Link 0.1.0</text>
+            <text class="opt-n">MOSS LINK 0.1.0</text>
             <text class="opt-d t3">dsh-link · 宿主插件 0.1.0</text>
           </view>
           <text class="mono t3">›</text>
+        </view>
+
+        <!-- 品牌区：把 MOSS 主体放进来，让"关于"页有可识别的主体而不是纯文字 -->
+        <view class="brand-card">
+          <image class="brand-img" src="/static/moss/hero.webp" mode="aspectFit" />
+          <view class="brand-body">
+            <text class="brand-h mark mono">MOSS<span class="brand-acc">LINK</span></text>
+            <text class="brand-d t3">把 dsh 带到手机上</text>
+          </view>
         </view>
       </view>
 
@@ -158,11 +172,29 @@ function about(): void {
 </template>
 
 <style lang="scss" scoped>
+.brand-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 13px;
+  border-top: 1px solid var(--bd);
+}
+
+.brand-img { width: 64px; height: 64px; flex: none; }
+.brand-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.brand-h { font-size: 15px; font-weight: 700; letter-spacing: 1.6px; color: var(--t1); }
+.brand-acc { color: var(--acc); }
+.brand-d { font-size: 11.5px; }
+
 .head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0 16px 8px;
+  padding-right: 16px;
+  padding-bottom: 8px;
+  padding-left: 16px;
+  /* 刻意不用 padding 简写：简写会把 padding-top 重置为 0，
+     覆盖掉 .head 上的 .safe-top（状态栏安全区）。 */
 }
 
 .h1 { font-size: 21px; font-weight: 700; }

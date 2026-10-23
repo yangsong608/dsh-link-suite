@@ -9,11 +9,15 @@ import { computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import PageShell from '@/components/PageShell.vue'
 import MossDot from '@/components/moss/MossDot.vue'
+import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
 import { connectDevice, refreshAll } from '@/core/link'
 
 const rows = computed(() => state.sessions)
+
+/** 有没有会话在跑。空列表时角标不亮——"没东西在跑"本身是有效信息。 */
+const anyRunning = computed(() => rows.value.some((r) => r.status === 'running'))
 const groups = computed(() => [
   {
     key: 'waiting',
@@ -87,7 +91,11 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
   <PageShell active="sessions" @tab="goTab">
     <view class="head safe-top">
       <text class="h1">会话</text>
-      <text class="mono t3">{{ state.devices.length }} 台机器</text>
+      <view class="head-r">
+        <text class="mono t3">{{ state.devices.length }} 台机器</text>
+        <!-- 角标放在标题右侧：一眼知道"有没有东西在跑"，不用逐条看状态 -->
+        <MossBadge :size="24" :working="anyRunning" :glow="!state.lite" />
+      </view>
     </view>
 
     <view class="scroll">
@@ -136,11 +144,21 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 </template>
 
 <style lang="scss" scoped>
+.head-r {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  padding: 0 16px 8px;
+  padding-right: 16px;
+  padding-bottom: 8px;
+  padding-left: 16px;
+  /* 刻意不用 padding 简写：简写会把 padding-top 重置为 0，
+     覆盖掉 .head 上的 .safe-top（状态栏安全区）。 */
 }
 
 .h1 { font-size: 21px; font-weight: 700; letter-spacing: 0.4px; }

@@ -2,7 +2,7 @@
   "name": "dsh-link",
   "version": "0.1.0",
   "private": true,
-  "description": "DSH Link 宿主插件：多设备远程访问网关 + PC 端锁屏",
+  "description": "MOSS Link 宿主插件：多设备远程访问网关 + PC 端锁屏",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -58,7 +58,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node tests/manifest.test.mjs && node tests/lock.test.mjs && node tests/lock-password.test.mjs && node tests/devices.test.mjs && node tests/limits.test.mjs && node tests/adapters.test.mjs",
+    "test": "npm run build && node tests/manifest.test.mjs && node tests/lock.test.mjs && node tests/lock-password.test.mjs && node tests/devices.test.mjs && node tests/limits.test.mjs && node tests/adapters.test.mjs && node tests/setup-page.test.mjs && node tests/gateway.e2e.test.mjs",
     "clean": "rm -rf lib"
   }
 }

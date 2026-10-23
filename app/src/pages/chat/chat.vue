@@ -261,7 +261,12 @@ onUnmounted(() => {
       <view class="field">
         <view class="plus mono" @tap="haptic('light')">+</view>
         <input v-model="draft" class="in" placeholder="发指令…" placeholder-class="ph" @confirm="send" />
-        <view class="send" :class="{ on: draft.length > 0 }" @tap="send">
+        <!-- on 同时表达"有内容"与"没在发送中"：发送中再点会重复发消息 -->
+        <view
+          class="send"
+          :class="{ on: draft.length > 0 && !sending, 'is-disabled': draft.length === 0 || sending }"
+          @tap="send"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M12 19V5M6 11l6-6 6 6" />
           </svg>
@@ -358,11 +363,23 @@ onUnmounted(() => {
 .tail { height: 18px; }
 
 /* 输入区 */
+/**
+ * 输入区。
+ *
+ * 底部安全区由 .safe-bottom 统一给（它读 --safe-bottom-real），
+ * 这里只补左右与内距。输入框高度 44px：低于这个值点不到，
+ * 高于这个值在 6.7 英寸屏上会挤掉一屏消息。
+ */
 .composer {
   padding: 8px 12px;
   border-top: 1px solid var(--bd);
   background: linear-gradient(0deg, var(--bg) 72%, transparent);
 }
+
+.field { min-height: 44px; }
+
+/* 发送按钮是唯一的主操作，禁用态必须明显 */
+.send.is-disabled { opacity: 0.38; }
 
 .field {
   display: flex;

@@ -13,3 +13,5 @@ docs/prototype/*.tmp.png
 coverage/
 .idea/
 .vscode/
+# 3D 模型是外部仓库的符号链接，不进本仓库（见 app/tools/moss-render/README.md）
+app/tools/moss-render/assets3d
