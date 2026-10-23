@@ -63,6 +63,8 @@ export interface WebServerService {
 export interface SessionController {
   list(request: { cursor?: string }, signal: AbortSignal): Promise<unknown>
   rename(request: { sessionId: string; title: string }): Promise<unknown>
+  /** 新建会话：workspaceId 与 cwd 二选一。 */
+  create?(request: { workspaceId?: string; cwd?: string; sessionId?: string; agentPreset?: string }): Promise<unknown>
   modelCatalog?(): Promise<unknown>
   /** 读投影（队列就在 values.inbox）。冷会话也能读，不需要唤醒 agent。 */
   projections?(request: { sessionId: string }): Promise<unknown>

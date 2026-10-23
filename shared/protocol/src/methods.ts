@@ -62,6 +62,7 @@ export const METHODS = [
   'dir.list',
 
   // 会话
+  'session.create',
   'session.list',
   'session.prompt',
   'session.modelCatalog',

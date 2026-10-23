@@ -185,6 +185,59 @@ function statusLabel(status: SessionRow['status']): string {
 }
 
 /** 刷新：连上主机后拉真实列表；失败时保留旧列表并提示。 */
+/**
+ * 新建会话。
+ *
+ * dsh 的 session.create 要一个落点：workspaceId（归属某个工作区）
+ * 或 cwd（自己占一个目录）。手机上让用户选工作区最自然——
+ * 目录选择在手机上很难用，而且他本来就是在某个项目里干活。
+ */
+async function newSession(): Promise<void> {
+  haptic('light')
+  const link = currentLink()
+  if (link === undefined) {
+    uni.showToast({ title: '先连接一台电脑', icon: 'none' })
+    return
+  }
+  if (state.workspaces.length === 0) {
+    uni.showToast({ title: '这台电脑还没有工作区，请先在 DSH 里打开一个项目', icon: 'none' })
+    return
+  }
+
+  const pick = (index: number): void => {
+    const ws = state.workspaces[index]
+    if (ws === undefined) return
+    void createIn(ws.id)
+  }
+
+  // 只有一个工作区就不必让用户再点一次
+  if (state.workspaces.length === 1) {
+    pick(0)
+    return
+  }
+  uni.showActionSheet({
+    itemList: state.workspaces.slice(0, 10).map((w) => w.name || w.path),
+    success: (res) => { pick(res.tapIndex) },
+  })
+}
+
+async function createIn(workspaceId: string): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) return
+  uni.showLoading({ title: '创建中', mask: true })
+  try {
+    const out = await link.call<{ sessionId: string }>('session.create', { workspaceId })
+    await refresh()
+    uni.hideLoading()
+    haptic('medium')
+    // 直接进对话页：新建完就该开始说话，而不是停在列表
+    uni.navigateTo({ url: `/pages/chat/chat?id=${out.sessionId}` })
+  } catch (e) {
+    uni.hideLoading()
+    uni.showToast({ title: e instanceof Error ? e.message.slice(0, 20) : '创建失败', icon: 'none' })
+  }
+}
+
 async function refresh(): Promise<void> {
   const result = await refreshAll()
   if (!result.ok && result.error !== undefined) {
@@ -289,6 +342,9 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
         <view class="search-btn" @tap="toggleSearch">
           <view class="ico-search" :class="{ on: searching }" />
         </view>
+        <view class="search-btn" @tap="newSession">
+          <view class="ico-plus" />
+        </view>
         <!-- 角标放在标题右侧：一眼知道"有没有东西在跑"，不用逐条看状态 -->
         <MossBadge :size="24" :working="anyRunning" :glow="!state.lite" />
       </view>
@@ -373,7 +429,10 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
       </view>
       <view v-else-if="groups.length === 0" class="empty">
         <text class="empty-t">这台电脑还没有会话</text>
-        <text class="empty-d t3">在电脑上打开 DSH 开始一个对话，它会出现在这里。</text>
+        <text class="empty-d t3">在这里新建一个，或者去电脑上开始一个对话。</text>
+        <view class="empty-btn" @tap="newSession">
+          <text>新建会话</text>
+        </view>
       </view>
 
       <view class="foot t3">会话数据来自各台电脑，本地只留最近 2000 条</view>
@@ -436,6 +495,33 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
   background: var(--t2);
   transform: rotate(45deg);
   border-radius: 1px;
+}
+
+/* 加号：两条线交叉 */
+.ico-plus {
+  position: relative;
+  width: 15px;
+  height: 15px;
+}
+.ico-plus::before,
+.ico-plus::after {
+  content: '';
+  position: absolute;
+  background: var(--acc);
+  border-radius: 1px;
+}
+.ico-plus::before { left: 6.5px; top: 1px; width: 2px; height: 13px; }
+.ico-plus::after { top: 6.5px; left: 1px; height: 2px; width: 13px; }
+
+.empty-btn {
+  margin: 14px auto 0;
+  padding: 9px 18px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--bd-strong);
+  background: var(--acc-soft);
+  color: var(--acc);
+  font-size: 13px;
+  display: inline-block;
 }
 
 .search-row {
