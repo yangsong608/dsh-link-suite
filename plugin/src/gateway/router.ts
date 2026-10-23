@@ -86,7 +86,7 @@ export function createHandlers(): GatewayHandlers {
     // ── 设备与连接 ────────────────────────────────────────────────────────
     'device.info': async (rc) => ({
       hostId: rc.hostId,
-      name: rc.cfg.gateway.bind === 'lan' ? 'DSH Link (LAN)' : 'DSH Link (loopback)',
+      name: rc.cfg.gateway.bind === 'lan' ? 'MOSS Link (LAN)' : 'MOSS Link (loopback)',
       platform: process.platform,
       dshVersion: rc.dshVersion,
       linkVersion: '0.1.0',

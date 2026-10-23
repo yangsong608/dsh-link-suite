@@ -14,13 +14,10 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = withDefaults(
   defineProps<{
-    /** 真实数据：主机数、最后选中的主机名 */
-    hostCount?: number
-    lastName?: string
-    /** 热启动只播 300ms 的"眨眼" */
+    /** 热启动只播一小段的"眨眼" */
     quick?: boolean
   }>(),
-  { hostCount: 0, lastName: '', quick: false },
+  { quick: false },
 )
 
 const emit = defineEmits<{ (e: 'done'): void }>()
@@ -30,10 +27,17 @@ const phase = ref<Phase>('boot')
 const visible = ref(0)
 const timers: ReturnType<typeof setTimeout>[] = []
 
+/**
+ * 启动日志。
+ *
+ * 刻意**不含任何设备信息**（主机数、主机名都不显示）：启动页是每次冷启动
+ * 都会出现的公开画面，把"你连了几台机器、叫什么名字"印在上面，
+ * 在别人面前打开 App 时是一种不必要的暴露。状态信息留给首页。
+ */
 const lines = (): string[] => [
   'MOSS LINK v0.1.0',
-  `SCANNING ${props.hostCount} HOST${props.hostCount === 1 ? '' : 'S'}`,
-  props.lastName ? `TARGET ${props.lastName.toUpperCase()}` : 'TARGET —',
+  'INITIALIZING',
+  'LINK MODULE',
   'READY',
 ]
 
@@ -102,11 +106,12 @@ onBeforeUnmount(() => {
       </view>
     </view>
 
-    <!-- 真实的 MOSS 主体（预渲染图）。不用运行时 Three.js：
-         模型与引擎合计 1.7MB，而首包预算 400KB，见 tools/moss-render/README。 -->
+    <!-- 启动页只留终端框与徽标环，不放 MOSS 机体图。
+         机体图留给首页/会话页的角标（那里它是状态指示器，有意义）；
+         启动页放一张大图既拖慢首屏，也在深色底上看不清细节。 -->
     <view class="emblem-wrap">
       <view class="ring" />
-      <image class="moss-img" src="/static/moss/boot.webp" mode="aspectFit" />
+      <view class="mark mono">MOSS</view>
     </view>
   </view>
 </template>

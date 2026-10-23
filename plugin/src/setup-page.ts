@@ -33,7 +33,7 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DSH Link · 设置</title>
+<title>MOSS Link · 设置</title>
 <style>
   :root {
     --bg: #050806; --s1: #0b1210; --s2: #101a16;
@@ -108,7 +108,7 @@ export function renderSetupPage(rawHostId: string, rawEndpoints: readonly string
 </head>
 <body>
 <div class="wrap">
-  <h1>DSH<span>LINK</span> / 设置</h1>
+  <h1>MOSS<span>LINK</span> / 设置</h1>
   <div class="sub">主机 <code>${hostId}</code> · 端口 <code>${String(port)}</code></div>
 
   <section>

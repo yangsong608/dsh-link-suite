@@ -26,7 +26,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true,
 renderer.setClearColor(0x000000, 0)
 renderer.outputColorSpace = THREE.SRGBColorSpace
 renderer.toneMapping = THREE.ACESFilmicToneMapping
-renderer.toneMappingExposure = 1.15
+renderer.toneMappingExposure = 1.75
 
 const scene = new THREE.Scene()
 const camera = new THREE.PerspectiveCamera(26, 1, 0.1, 4000)
@@ -37,7 +37,8 @@ try {
   const room = new THREE.Scene()
   room.add(new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshBasicMaterial({ color: 0x8899aa, side: THREE.BackSide }),
+    // 环境球要亮：金属件的可见度几乎全靠环境反射，深灰色球会把机身压成黑的
+    new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.BackSide }),
   ))
   const lamp = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: 0xffffff }))
   lamp.position.set(0, 2, 0); lamp.rotation.x = -Math.PI / 2
@@ -49,10 +50,45 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x24303d, 1.7))
 const key = new THREE.DirectionalLight(0xffffff, 2.5); key.position.set(50, 80, 90); scene.add(key)
 const fill = new THREE.DirectionalLight(0x9dc6ff, 1.2); fill.position.set(-70, 24, -30); scene.add(fill)
 const rim = new THREE.DirectionalLight(0xffd9a0, 0.9); rim.position.set(-20, -50, 40); scene.add(rim)
+// 正面补光：启动页底色是近黑，没有这盏灯机身会整体沉进背景
+const front = new THREE.DirectionalLight(0xffffff, 1.9); front.position.set(0, 10, 120); scene.add(front)
+// 底部反弹光：让机身下缘不至于完全黑掉，给出"立着"的体积感
+const bounce = new THREE.DirectionalLight(0x8fd8ff, 0.7); bounce.position.set(10, -80, 60); scene.add(bounce)
+
+/**
+ * 贴图加载追踪。
+ *
+ * 真实踩过的坑：TextureLoader 是异步的，FBXLoader 的 onLoad 回调返回时
+ * 不代表贴图已经就绪。第一次渲染（boot）于是拿到空贴图，机身发黑；
+ * 第二次渲染（badge）就正常了。
+ *
+ * 表现是"同一套光照与角度，第一张黑、第二张正常"——很容易误判成角度问题，
+ * 去反复改 yaw/pitch。正确做法是等贴图全部 onLoad 再渲染。
+ *
+ * 实现刻意简单：一个计数器 + 轮询等待。贴图数量固定（13 个 webp），
+ * 加载很快，轮询比精巧的 Promise 编排更不容易写错。
+ */
+let pendingTextures = 0
+
+function trackTexture(tex) {
+  pendingTextures += 1
+  const done = () => { pendingTextures -= 1 }
+  tex.addEventListener('load', done)
+  tex.addEventListener('error', done)
+  return tex
+}
+
+/** 等贴图全部就绪；超时 8s 后放弃（宁可渲一张暗图，也不要卡死）。 */
+async function waitTextures() {
+  const deadline = Date.now() + 8000
+  while (pendingTextures > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
 
 const loader = new THREE.TextureLoader()
-const texS = (n) => { const t = loader.load('/assets3d/tex/' + n + '.webp'); t.colorSpace = THREE.SRGBColorSpace; return t }
-const texL = (n) => loader.load('/assets3d/tex/' + n + '.webp')
+const texS = (n) => { const t = trackTexture(loader.load('/assets3d/tex/' + n + '.webp')); t.colorSpace = THREE.SRGBColorSpace; return t }
+const texL = (n) => trackTexture(loader.load('/assets3d/tex/' + n + '.webp'))
 
 let obj = null
 let eyeCore = null
@@ -163,13 +199,19 @@ window.__render = async (opts) => {
       const mat = new THREE.MeshStandardMaterial({
         map: HAVE.has(k + '_base') ? texS(k + '_base') : null,
         metalnessMap: orm, roughnessMap: orm, aoMap: orm,
-        metalness: 0.3, roughness: 0.62,
-        transparent: k === 'Glass', opacity: k === 'Glass' ? 0.45 : 1,
+        // metalness 降到 0.18：金属度越高越依赖环境反射，深色背景下越黑
+        metalness: 0.18, roughness: 0.52,
+        // 自发光只用来"托底"：MOSS 的贴图偏暗，纯黑在深色启动页上等于消失。
+        // 但强度必须低——之前 1.6 配 2.2 曝光把暗部推到纯白，
+        // 结果红眼灯（唯一的彩色元素）被冲掉了，反而看不出在发光。
+        emissive: new THREE.Color(0x16241f),
+        emissiveIntensity: 0.55,
+        transparent: k === 'Glass', opacity: k === 'Glass' ? 0.58 : 1,
       })
       if (HAVE.has(k + '_normal')) mat.normalMap = texL(k + '_normal')
       if (HAVE.has(k + '_emissive')) {
         mat.emissive = new THREE.Color(0xffffff)
-        mat.emissiveIntensity = 1.3
+        mat.emissiveIntensity = 0.6
         mat.emissiveMap = texL(k + '_emissive')
       }
       n.material = mat
@@ -204,10 +246,14 @@ window.__render = async (opts) => {
   }
   if (eyeLamp) eyeLamp.intensity = working ? 4.5 : 0.6
 
+  // 等贴图就绪：否则第一张图会拿到空材质（见 trackTexture 的注释）
+  await waitTextures()
+
   renderer.setPixelRatio(1)
   renderer.setSize(width, height, false)
   camera.aspect = width / height
   frame(yaw, pitch)
+  __renderCalls += 1
   renderer.render(scene, camera)
   // WebP 带 alpha 且体积约为 PNG 的 1/4；Chrome 支持 canvas 直接编码。
   // 回退到 PNG 只在浏览器不支持时发生（本项目固定用 Chrome 渲染）。
@@ -236,6 +282,26 @@ window.__probe = () => {
       return { name: n, exists: !!m, visible: m ? m.visible : null }
     }),
   }
+}
+
+// 调试用：读相机位置，确认 yaw/pitch 真的生效
+window.__camPos = () => ({ pos: camera.position.toArray(), quat: camera.quaternion.toArray() })
+let __renderCalls = 0
+window.__renderCalls = () => __renderCalls
+window.__scene = () => {
+  const out = []
+  scene.traverse((n) => {
+    if (n.type === 'Scene' || n.type === 'Group') return
+    const box = new THREE.Box3().setFromObject(n)
+    const size = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+    out.push({
+      type: n.type, name: n.name || '(unnamed)', visible: n.visible,
+      size: size.toArray().map((v) => Math.round(v * 10) / 10),
+      center: center.toArray().map((v) => Math.round(v * 10) / 10),
+    })
+  })
+  return out
 }
 
 window.__ready = true

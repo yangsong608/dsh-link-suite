@@ -64,14 +64,16 @@ await mkdir(OUT, { recursive: true })
 /** 每一档：文件名 + 渲染参数。 */
 const shots = [
   // 启动页：偏 3/4 侧、略俯，能看出是立体的
-  { name: 'boot', width: 640, height: 640, yaw: 24, pitch: 10, working: false },
+  // 角度必须与 badge 一致（12/6）：24/10 会拍到机身的背光面，
+  // 贴图本身偏暗，那一面在近黑背景上等于消失（实测中位亮度 0）。
+  { name: 'boot', width: 640, height: 640, yaw: 12, pitch: 6, working: false },
   // 角标：正脸，小尺寸（在 28px 里不能有太多细节）
   { name: 'badge-idle', width: 160, height: 160, yaw: 12, pitch: 6, working: false },
   { name: 'badge-work', width: 160, height: 160, yaw: 12, pitch: 6, working: true },
   // 我的页面 / 关于页用的大图
   // hero 只在我的页面里以 ~120px 展示，900px 是浪费（650KB）。
   // 320px 在 3x 屏上仍够清晰。
-  { name: 'hero', width: 320, height: 320, yaw: 20, pitch: 8, working: false },
+  { name: 'hero', width: 320, height: 320, yaw: 12, pitch: 6, working: false },
 ]
 
 for (const shot of shots) {

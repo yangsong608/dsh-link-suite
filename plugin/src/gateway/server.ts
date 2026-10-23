@@ -123,7 +123,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       return
     }
     res.writeHead(426, { 'content-type': 'text/plain; charset=utf-8', upgrade: 'websocket' })
-    res.end('DSH Link gateway speaks WebSocket only\n')
+    res.end('MOSS Link gateway speaks WebSocket only\n')
   })
 
   // noServer：由我们自己决定"哪些 upgrade 能完成握手"。

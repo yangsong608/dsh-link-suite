@@ -233,12 +233,8 @@ onLoad(() => {
 
 <template>
   <PageShell active="devices" @tab="goTab">
-    <MossBoot
-      v-if="booting"
-      :host-count="onlineCount"
-      :last-name="activeDevice?.name ?? ''"
-      @done="onBootDone"
-    />
+    <!-- 启动页不接收任何设备信息：它是每次冷启动都会出现的公开画面。 -->
+    <MossBoot v-if="booting" @done="onBootDone" />
 
     <view class="head safe-top">
       <view class="brand">
