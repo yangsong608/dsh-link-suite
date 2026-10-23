@@ -702,6 +702,33 @@ export function createHandlers(): GatewayHandlers {
       }
     },
 
+    // ── 费用与峰谷 ────────────────────────────────────────────────────────
+    //
+    // 数据**转发**自 dsh-cost-meter，不自算金额：它的账本按真实 token 用量与
+    // 峰谷价表计费，我们重算一遍只会得出对不上的数。
+    //
+    // 峰谷状态它没有对外字段（峰谷只体现在计费里），所以直接复用它的
+    // pricing 模块判定；模块拿不到就返回 peak:null —— 不显示也比显示假的强。
+    'cost.summary': async (rc, p) => {
+      const meter = rc.ctx.get<CostMeterService>('costMeter', false)
+      if (meter?.getSessionCost === undefined) {
+        return { available: false, reason: '宿主未安装 dsh-cost-meter' }
+      }
+      const sessionId = typeof p['sessionId'] === 'string' ? p['sessionId'] : ''
+
+      let session: unknown = null
+      if (sessionId.length > 0) {
+        try {
+          session = await meter.getSessionCost(sessionId)
+        } catch {
+          session = null
+        }
+      }
+
+      const peak = await readPeakPhase()
+      return { available: true, session, peak }
+    },
+
     // ── 会话管理 ──────────────────────────────────────────────────────────
     'session.rename': async (rc, p) => {
       const sessions = sessionsOf(rc.ctx)
@@ -879,4 +906,100 @@ function decodeBase64(input: string): Uint8Array {
     for (let j = 0; j < bin.length; j++) out.push(bin.charCodeAt(j))
   }
   return Uint8Array.from(out)
+}
+
+/** dsh-cost-meter 暴露的服务（位置参数，不是对象）。 */
+interface CostMeterService {
+  getSessionCost?(sessionId: string): Promise<unknown>
+}
+
+interface PeakPhase {
+  /** 当前是否峰时计价 */
+  peak: boolean
+  /** 是否周末（周末全天谷价） */
+  weekend?: boolean
+  /** 距下一次切换的毫秒数 */
+  msUntilSwitch: number
+  /** 切换后的状态 */
+  next: 'peak' | 'offPeak'
+}
+
+/**
+ * 读当前峰谷状态。
+ *
+ * 复用 dsh-cost-meter 自己的 pricing 模块（它导出了 peakPhaseAt、
+ * DEFAULT_PEAK_WINDOWS、DEFAULT_PEAK_HOLIDAYS）。为什么不自算：
+ * 峰谷窗口有节假日与周末特例，自己写一套必然与计费口径不一致，
+ * 那就等于给用户一个错误的省钱提醒。
+ *
+ * 模块解析失败（没装/打包方式变了）时返回 undefined，界面不显示这块。
+ */
+async function readPeakPhase(): Promise<PeakPhase | undefined> {
+  try {
+    const pricingPath = await resolveCostMeterPricing()
+    if (pricingPath === undefined) return undefined
+    const pricing = (await import(pricingPath)) as {
+      peakPhaseAt?: (atMs: number, windows: unknown, holidays?: unknown) => unknown
+      DEFAULT_PEAK_WINDOWS?: unknown
+      DEFAULT_PEAK_HOLIDAYS?: unknown
+    }
+    if (pricing.peakPhaseAt === undefined) return undefined
+    // 实测返回：{ inPeak, weekend, prevAtMs, nextAtMs, nextIntoPeak }
+    const raw = pricing.peakPhaseAt(Date.now(), pricing.DEFAULT_PEAK_WINDOWS, pricing.DEFAULT_PEAK_HOLIDAYS) as
+      | { inPeak?: boolean; weekend?: boolean; nextAtMs?: number; nextIntoPeak?: boolean }
+      | null
+      | undefined
+    if (raw === null || raw === undefined) return undefined
+    const peak = raw.inPeak === true
+    const nextAt = typeof raw.nextAtMs === 'number' ? raw.nextAtMs : 0
+    return {
+      peak,
+      weekend: raw.weekend === true,
+      msUntilSwitch: Math.max(0, nextAt - Date.now()),
+      next: raw.nextIntoPeak === true ? 'peak' : 'offPeak',
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 找到 dsh-cost-meter 的 pricing 模块地址。
+ *
+ * 为什么不能直接 require.resolve：我们插件是链接进宿主 profile 的，
+ * 模块解析从**真实路径**（仓库目录）出发，那里没有 dsh-cost-meter。
+ * 它会装在 `~/.dsh/profiles/<name>/node_modules/` 下，所以要显式去那里找。
+ *
+ * 找不到就返回 undefined —— 调用方据此不显示峰谷，绝不猜。
+ */
+async function resolveCostMeterPricing(): Promise<string | undefined> {
+  const { createRequire } = await import('node:module')
+  const { pathToFileURL } = await import('node:url')
+  const { readdir } = await import('node:fs/promises')
+  const { homedir } = await import('node:os')
+  const { join } = await import('node:path')
+
+  const require = createRequire(import.meta.url)
+  const candidates: string[] = [process.cwd(), join(homedir(), '.dsh', 'profiles')]
+
+  // profile 名是用户起的，不能写死：扫一遍所有 profile 的 node_modules
+  try {
+    const profilesDir = join(homedir(), '.dsh', 'profiles')
+    for (const name of await readdir(profilesDir)) {
+      candidates.push(join(profilesDir, name, 'node_modules'))
+    }
+  } catch {
+    // 没有 profiles 目录就只用上面的候选
+  }
+
+  for (const base of candidates) {
+    try {
+      const pkg = require.resolve('dsh-cost-meter/package.json', { paths: [base] })
+      // 实体文件在 lib/ 下（exports 只暴露 . / ./client / ./typert）
+      return new URL('./lib/pricing.js', pathToFileURL(pkg)).href
+    } catch {
+      continue
+    }
+  }
+  return undefined
 }

@@ -176,6 +176,61 @@ function usageLine(d: DeviceCard): string {
   return parts.join(' · ')
 }
 
+/**
+ * 费用与峰谷。
+ *
+ * 数据全部来自宿主的 dsh-cost-meter（我们只转发）。宿主没装就整块不显示——
+ * 显示一个"¥0.00"比不显示更糟，用户会以为真的没花钱。
+ */
+interface CostInfo {
+  available: boolean
+  session?: unknown
+  peak?: { peak: boolean; weekend?: boolean; msUntilSwitch: number; next: 'peak' | 'offPeak' } | null
+}
+const cost = ref<CostInfo | undefined>(undefined)
+
+function costText(): string {
+  const c = cost.value
+  if (c?.available !== true) return ''
+  const s = c.session as { total?: { amount?: number; currency?: string }; cost?: number; usd?: number } | null | undefined
+  if (s === null || s === undefined) return ''
+  const amount = typeof s.total?.amount === 'number' ? s.total.amount
+    : typeof s.cost === 'number' ? s.cost
+      : typeof s.usd === 'number' ? s.usd : undefined
+  if (amount === undefined) return ''
+  const cur = s.total?.currency ?? 'USD'
+  const symbol = cur === 'CNY' ? '¥' : '$'
+  return `${symbol}${amount.toFixed(amount < 0.01 ? 4 : 2)}`
+}
+
+/** 峰谷提醒：只给"还有多久切换"，不说"省钱多少"——金额口径不归我们解释。 */
+function peakText(): string {
+  const p = cost.value?.peak
+  if (p === null || p === undefined) return ''
+  const mins = Math.round(p.msUntilSwitch / 60_000)
+  const when = mins >= 90 ? `${Math.round(mins / 60)} 小时` : `${String(mins)} 分钟`
+  if (p.weekend === true) return '周末谷价'
+  return p.peak ? `峰时计价 · ${when}后转谷时` : `谷时计价 · ${when}后转峰时`
+}
+
+function peakTone(): 'peak' | 'valley' | '' {
+  const p = cost.value?.peak
+  if (p === null || p === undefined) return ''
+  return p.peak ? 'peak' : 'valley'
+}
+
+async function loadCost(): Promise<void> {
+  const link = currentLink()
+  if (link === undefined) { cost.value = undefined; return }
+  // 用最近一次会话的费用：设备卡是"这台机器上正在发生的事"的入口
+  const sessionId = state.sessions[0]?.id ?? ''
+  try {
+    cost.value = await link.call<CostInfo>('cost.summary', sessionId.length > 0 ? { sessionId } : {})
+  } catch {
+    cost.value = undefined
+  }
+}
+
 function onBootDone(): void {
   bootPlayed = true
   booting.value = false
@@ -498,7 +553,7 @@ onLoad(() => {
   if (device !== undefined) {
     state.activeId = device.deviceId
     connectDevice(device)
-    void refreshAll()
+    void refreshAll().then(() => loadCost())
   }
 })
 </script>
@@ -915,6 +970,18 @@ onLoad(() => {
 }
 
 .row { margin-bottom: 0; }
+
+.dev-cost {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.cost { font-size: 11px; color: var(--t2); }
+.peak { font-size: 10.5px; }
+.peak.peak { color: var(--warn); }
+.peak.valley { color: var(--acc); }
 
 .dev-meta {
   display: flex;
