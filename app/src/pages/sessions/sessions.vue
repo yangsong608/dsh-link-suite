@@ -10,6 +10,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import PageShell from '@/components/PageShell.vue'
 import MossDot from '@/components/moss/MossDot.vue'
 import MossBadge from '@/components/moss/MossBadge.vue'
+import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
 import { state, type SessionRow } from '@/core/store'
 import { haptic } from '@/core/haptic'
 import { connectDevice, refreshAll, currentLink } from '@/core/link'
@@ -59,6 +60,28 @@ const collapsedIds = ref<Set<string>>(new Set())
  * 搜索时不折叠：折叠状态会让命中项藏在收起的组里，
  * 用户会以为"搜不到"。
  */
+/** 统一弹层控制器。 */
+interface SheetState {
+  visible: boolean
+  kind: 'menu' | 'confirm' | 'prompt' | 'info'
+  title?: string
+  items?: SheetItem[]
+  message?: string
+  value?: string
+  placeholder?: string
+  confirmText?: string
+  onSelect?: (index: number) => void
+  onConfirm?: (text: string) => void
+}
+const sheet = ref<SheetState>({ visible: false, kind: 'menu' })
+
+function openSheet(opts: Omit<SheetState, 'visible'>): void {
+  sheet.value = { visible: true, ...opts }
+}
+
+function onSheetSelect(index: number): void { sheet.value.onSelect?.(index) }
+function onSheetConfirm(text: string): void { sheet.value.onConfirm?.(text) }
+
 const searching = ref(false)
 const keyword = ref('')
 
@@ -215,9 +238,14 @@ async function newSession(): Promise<void> {
     pick(0)
     return
   }
-  uni.showActionSheet({
-    itemList: state.workspaces.slice(0, 10).map((w) => w.name || w.path),
-    success: (res) => { pick(res.tapIndex) },
+  openSheet({
+    kind: 'menu',
+    title: '在哪个工作区新建',
+    items: state.workspaces.slice(0, 20).map((w) => ({
+      label: w.name || w.path,
+      hint: w.path,
+    })),
+    onSelect: (i) => { pick(i) },
   })
 }
 
@@ -262,11 +290,16 @@ function openChat(row: SessionRow): void {
  */
 function sessionMenu(row: SessionRow): void {
   haptic('medium')
-  uni.showActionSheet({
-    itemList: ['重命名', '归档（移出列表，日志保留）'],
-    success: (res) => {
-      if (res.tapIndex === 0) void renameSession(row)
-      else if (res.tapIndex === 1) void archiveSession(row)
+  openSheet({
+    kind: 'menu',
+    title: row.title,
+    items: [
+      { label: '重命名', hint: '只改标题，不影响内容' },
+      { label: '归档', hint: '移出列表，日志仍保留在电脑上' },
+    ],
+    onSelect: (i) => {
+      if (i === 0) void renameSession(row)
+      else if (i === 1) void archiveSession(row)
     },
   })
 }
@@ -274,23 +307,21 @@ function sessionMenu(row: SessionRow): void {
 async function renameSession(row: SessionRow): Promise<void> {
   const link = currentLink()
   if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
-  // showModal 的 editable 在部分平台不可用，用 showModal 拿输入后校验
-  uni.showModal({
+  openSheet({
+    kind: 'prompt',
     title: '重命名会话',
-    editable: true,
-    placeholderText: row.title,
-    content: row.title,
-    success: async (res) => {
-      if (!res.confirm) return
-      const title = String(res.content ?? '').trim()
+    value: row.title,
+    placeholder: '会话标题',
+    confirmText: '保存',
+    onConfirm: (text) => {
+      const title = text.trim()
       if (title.length === 0) return
-      try {
-        await link.call('session.rename', { sessionId: row.id, title })
+      void link.call('session.rename', { sessionId: row.id, title }).then(() => {
         row.title = title
         uni.showToast({ title: '已重命名', icon: 'none' })
-      } catch (error) {
-        uni.showToast({ title: error instanceof Error ? error.message.slice(0, 16) : '失败', icon: 'none' })
-      }
+      }).catch((e: unknown) => {
+        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
+      })
     },
   })
 }
@@ -299,22 +330,23 @@ async function archiveSession(row: SessionRow): Promise<void> {
   const link = currentLink()
   if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
   const running = row.status === 'running'
-  uni.showModal({
+  openSheet({
+    kind: 'confirm',
     title: '归档会话',
-    content: running
-      ? '这个会话正在运行。归档会先停止它，日志仍保留。继续？'
+    message: running
+      ? '这个会话正在运行。归档会先停止它，日志仍保留在电脑上。'
       : '归档后它不再出现在列表里，日志仍保留在电脑上。',
     confirmText: '归档',
-    success: async (res) => {
-      if (!res.confirm) return
-      try {
-        // 正在运行的会话必须显式 force，否则宿主会拒绝（session-active）
-        await link.call('session.archive', { sessionId: row.id, force: running })
-        state.sessions = state.sessions.filter((s) => s.id !== row.id)
-        uni.showToast({ title: '已归档', icon: 'none' })
-      } catch (error) {
-        uni.showToast({ title: error instanceof Error ? error.message.slice(0, 16) : '失败', icon: 'none' })
-      }
+    onConfirm: () => {
+      void (async () => {
+        try {
+          await link.call('session.archive', { sessionId: row.id, force: running })
+          state.sessions = state.sessions.filter((x) => x.id !== row.id)
+          uni.showToast({ title: '已归档', icon: 'none' })
+        } catch (e) {
+          uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
+        }
+      })()
     },
   })
 }
@@ -437,6 +469,19 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
 
       <view class="foot t3">会话数据来自各台电脑，本地只留最近 2000 条</view>
     </view>
+    <MossSheet
+      :visible="sheet.visible"
+      :kind="sheet.kind"
+      :title="sheet.title"
+      :items="sheet.items ?? []"
+      :message="sheet.message ?? ''"
+      :value="sheet.value ?? ''"
+      :placeholder="sheet.placeholder ?? ''"
+      :confirm-text="sheet.confirmText ?? '确定'"
+      @update:visible="sheet.visible = $event"
+      @select="onSheetSelect"
+      @confirm="onSheetConfirm"
+    />
   </PageShell>
 </template>
 

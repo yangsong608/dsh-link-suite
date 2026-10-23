@@ -29,8 +29,8 @@ const props = withDefaults(
   defineProps<{
     visible: boolean
     title?: string
-    /** menu：选项列表；confirm：确认；prompt：带输入框 */
-    kind?: 'menu' | 'confirm' | 'prompt'
+    /** menu：选项列表；confirm：确认；prompt：带输入框；info：只读说明 */
+    kind?: 'menu' | 'confirm' | 'prompt' | 'info'
     items?: readonly SheetItem[]
     /** confirm / prompt 的正文 */
     message?: string
@@ -97,20 +97,27 @@ function cancel(): void {
 
 function pick(index: number): void {
   haptic('light')
-  emit('select', index)
+  /*
+   * 先关自己，再通知调用方。
+   *
+   * 顺序反了会出大事：先 emit('select') 时，调用方可能立刻打开**另一个**弹层
+   * （比如"归档会话"→确认框），紧接着这里的 close() 又把 visible 置回 false，
+   * 新弹层当场消失 —— 表现就是"点归档没反应"。
+   */
   close()
+  emit('select', index)
 }
 
 function submit(): void {
   haptic('medium')
-  emit('confirm', draft.value)
   close()
+  emit('confirm', draft.value)
 }
 
 function ok(): void {
   haptic('medium')
-  emit('confirm', '')
   close()
+  emit('confirm', '')
 }
 </script>
 
@@ -138,13 +145,21 @@ function ok(): void {
         <view v-if="withDividers.length === 0" class="empty">没有可选项</view>
       </scroll-view>
 
-      <!-- 确认 -->
-      <view v-else-if="props.kind === 'confirm'" class="body">
+      <!-- 确认 / 只读说明 -->
+      <view v-else-if="props.kind === 'confirm' || props.kind === 'info'" class="body">
         <text class="msg">{{ props.message }}</text>
       </view>
 
-      <!-- 输入 -->
-      <view v-else class="body">
+      <!-- 只读：只有一个按钮，不要假装有"取消" -->
+      <view v-if="props.kind === 'info'" class="actions one">
+        <view class="btn primary" @tap="cancel">
+          <text>关闭</text>
+        </view>
+      </view>
+
+      <!-- 输入（只能用 prompt 命中；写成 v-else 会把 menu 也当成输入态，
+           菜单底部凭空多出一个空输入框） -->
+      <view v-else-if="props.kind === 'prompt'" class="body">
         <text v-if="props.message.length > 0" class="msg">{{ props.message }}</text>
         <textarea
           v-if="props.multiline"
@@ -165,7 +180,7 @@ function ok(): void {
       </view>
 
       <!-- 操作区：confirm / prompt 才有 -->
-      <view v-if="props.kind !== 'menu'" class="actions">
+      <view v-if="props.kind === 'confirm' || props.kind === 'prompt'" class="actions">
         <view class="btn ghost" @tap="cancel">
           <text>{{ props.cancelText }}</text>
         </view>
@@ -284,6 +299,8 @@ function ok(): void {
   gap: 10px;
   padding: 14px 16px 6px;
 }
+
+.actions.one { justify-content: stretch; }
 
 .btn {
   flex: 1;

@@ -11,6 +11,7 @@ import { onLoad } from '@dcloudio/uni-app'
 import PageShell from '@/components/PageShell.vue'
 import MossTerm from '@/components/moss/MossTerm.vue'
 import MossBoot from '@/components/moss/MossBoot.vue'
+import MossSheet, { type SheetItem } from '@/components/MossSheet.vue'
 import MossBadge from '@/components/moss/MossBadge.vue'
 import { state, activeDevice, skinClass, themeClass, liteClass, type DeviceCard } from '@/core/store'
 import { haptic } from '@/core/haptic'
@@ -60,6 +61,28 @@ const otherDevices = computed(() =>
 )
 
 const rootClass = computed(() => ['dsh', skinClass.value, themeClass.value, liteClass.value])
+
+/** 统一弹层控制器（与对话页同一套交互语言）。 */
+interface SheetState {
+  visible: boolean
+  kind: 'menu' | 'confirm' | 'prompt' | 'info'
+  title?: string
+  items?: SheetItem[]
+  message?: string
+  value?: string
+  placeholder?: string
+  confirmText?: string
+  onSelect?: (index: number) => void
+  onConfirm?: (text: string) => void
+}
+const sheet = ref<SheetState>({ visible: false, kind: 'menu' })
+
+function openSheet(opts: Omit<SheetState, 'visible'>): void {
+  sheet.value = { visible: true, ...opts }
+}
+
+function onSheetSelect(index: number): void { sheet.value.onSelect?.(index) }
+function onSheetConfirm(text: string): void { sheet.value.onConfirm?.(text) }
 
 function statusOf(d: DeviceCard): 'online' | 'connecting' | 'offline' | 'needs-auth' | 'locked' {
   // 非当前连接的设备没有本地连接状态，用宿主下发的 online 判断
@@ -222,13 +245,20 @@ const needsAddress = computed(() => {
  */
 function deviceMenu(d: DeviceCard): void {
   haptic('medium')
-  uni.showActionSheet({
-    itemList: ['重命名', '查看详情', '断开连接', '移除设备'],
-    success: (res) => {
-      if (res.tapIndex === 0) void renameDevice(d)
-      else if (res.tapIndex === 1) void showDeviceDetail(d)
-      else if (res.tapIndex === 2) disconnectDevice(d)
-      else if (res.tapIndex === 3) void removeDevice(d)
+  openSheet({
+    kind: 'menu',
+    title: d.name,
+    items: [
+      { label: '重命名', hint: '改的是本机显示名，不影响电脑' },
+      { label: '查看详情', hint: '设备 ID / 地址 / 状态' },
+      { label: '断开连接', hint: '只是断线，配对关系保留' },
+      { label: '移除设备', hint: '需要重新配对才能再连', danger: true },
+    ],
+    onSelect: (i) => {
+      if (i === 0) void renameDevice(d)
+      else if (i === 1) void showDeviceDetail(d)
+      else if (i === 2) disconnectDevice(d)
+      else if (i === 3) void removeDevice(d)
     },
   })
 }
@@ -236,27 +266,26 @@ function deviceMenu(d: DeviceCard): void {
 async function renameDevice(d: DeviceCard): Promise<void> {
   const link = currentLink()
   if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
-  uni.showModal({
+  openSheet({
+    kind: 'prompt',
     title: '重命名设备',
-    editable: true,
-    content: d.name,
-    placeholderText: d.name,
-    success: async (res) => {
-      if (!res.confirm) return
-      const label = String(res.content ?? '').trim()
+    message: '只改本机显示名，电脑上不受影响。',
+    value: d.name,
+    placeholder: '给这台电脑起个名字',
+    confirmText: '保存',
+    onConfirm: (text) => {
+      const label = text.trim()
       if (label.length === 0) return
-      try {
-        await link.call('device.rename', { deviceId: d.deviceId, label })
-        // DeviceCard.name 来自 DeviceInfo 的只读字段，这里就地替换整条
+      void link.call('device.rename', { deviceId: d.deviceId, label }).then(() => {
         const idx = state.devices.findIndex((x) => x.deviceId === d.deviceId)
         if (idx >= 0) {
           const cur = state.devices[idx]
           if (cur !== undefined) state.devices[idx] = { ...cur, name: label }
         }
         uni.showToast({ title: '已重命名', icon: 'none' })
-      } catch (error) {
-        uni.showToast({ title: error instanceof Error ? error.message.slice(0, 16) : '失败', icon: 'none' })
-      }
+      }).catch((e: unknown) => {
+        uni.showToast({ title: e instanceof Error ? e.message.slice(0, 16) : '失败', icon: 'none' })
+      })
     },
   })
 }
@@ -267,11 +296,11 @@ function showDeviceDetail(d: DeviceCard): void {
     `平台：${platformLabel(d.platform)}`,
     `角色：${d.role}`,
     `设备 ID：${d.deviceId}`,
-    `连接：${d.endpoint?.url ?? '（未知）'}`,
+    `连接地址：${d.endpoint?.url ?? '（未知）'}`,
     `状态：${statusText(statusOf(d))}`,
     d.lastSeen ? `最近活跃：${relativeTime(d.lastSeen)}` : '',
   ].filter((x) => x.length > 0)
-  uni.showModal({ title: '设备详情', content: lines.join('\n'), showCancel: false, confirmText: '关闭' })
+  openSheet({ kind: 'info', title: '设备详情', message: lines.join('\n') })
 }
 
 function statusText(s: ReturnType<typeof statusOf>): string {
@@ -297,25 +326,22 @@ function disconnectDevice(d: DeviceCard): void {
 }
 
 async function removeDevice(d: DeviceCard): Promise<void> {
-  uni.showModal({
-    title: `移除「${d.name}」？`,
-    content: '这台设备需要重新配对才能再连接。已有会话不受影响。',
+  openSheet({
+    kind: 'confirm',
+    title: `移除「${d.name}」`,
+    message: '这台设备需要重新配对才能再连接。已有会话不受影响。',
     confirmText: '移除',
-    confirmColor: '#ff5c4d',
-    success: async (res) => {
-      if (!res.confirm) return
+    onConfirm: () => {
       const link = currentLink()
-      if (link !== undefined) {
-        try {
-          await link.call('device.revoke', { deviceId: d.deviceId })
-        } catch {
-          // 撤销失败也允许本地移除，避免列表里留下死条目
+      void (async () => {
+        if (link !== undefined) {
+          try { await link.call('device.revoke', { deviceId: d.deviceId }) } catch { /* 撤销失败也允许本地移除 */ }
         }
-      }
-      state.devices = state.devices.filter((x) => x.deviceId !== d.deviceId)
-      if (state.activeId === d.deviceId) state.activeId = state.devices[0]?.deviceId ?? ''
-      haptic('heavy')
-      uni.showToast({ title: '已移除', icon: 'none' })
+        state.devices = state.devices.filter((x) => x.deviceId !== d.deviceId)
+        if (state.activeId === d.deviceId) state.activeId = state.devices[0]?.deviceId ?? ''
+        haptic('heavy')
+        uni.showToast({ title: '已移除', icon: 'none' })
+      })()
     },
   })
 }
@@ -481,6 +507,20 @@ onLoad(() => {
   <PageShell active="devices" @tab="goTab">
     <!-- 启动页不接收任何设备信息：它是每次冷启动都会出现的公开画面。 -->
     <MossBoot v-if="booting" @done="onBootDone" />
+
+    <MossSheet
+      :visible="sheet.visible"
+      :kind="sheet.kind"
+      :title="sheet.title"
+      :items="sheet.items ?? []"
+      :message="sheet.message ?? ''"
+      :value="sheet.value ?? ''"
+      :placeholder="sheet.placeholder ?? ''"
+      :confirm-text="sheet.confirmText ?? '确定'"
+      @update:visible="sheet.visible = $event"
+      @select="onSheetSelect"
+      @confirm="onSheetConfirm"
+    />
 
     <view class="head safe-top">
       <view class="brand">

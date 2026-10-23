@@ -8,10 +8,11 @@
  * 锁屏策略在这里是**只读展示**：真正的开关在 PC 上（那是 PC 的安全边界，
  * 手机改它等于把锁的钥匙挂在门外）。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import PageShell from '@/components/PageShell.vue'
 import { state, skin, markUserPreference, type SkinMode } from '@/core/store'
 import { haptic } from '@/core/haptic'
+import MossSheet from '@/components/MossSheet.vue'
 
 const skins: { key: SkinMode; name: string; desc: string; dot: string }[] = [
   // desc 必须说人话，而且要说得准：
@@ -55,13 +56,11 @@ function goTab(tab: 'devices' | 'sessions' | 'me'): void {
   uni.reLaunch({ url: map[tab] })
 }
 
+const aboutOpen = ref(false)
+
 function about(): void {
-  uni.showModal({
-    title: 'MOSS LINK 0.1.0',
-    content: '数据不经过任何服务器。\n锁屏挡住的是人，不是进程。',
-    showCancel: false,
-    confirmText: '知道了',
-  })
+  haptic('light')
+  aboutOpen.value = true
 }
 </script>
 
@@ -168,6 +167,14 @@ function about(): void {
         <text class="mono">NO CLOUD / NO ACCOUNT</text>
       </view>
     </view>
+    <MossSheet
+      :visible="aboutOpen"
+      kind="info"
+      title="MOSS LINK 0.1.0"
+      message="数据不经过任何服务器。&#10;锁屏挡住的是人，不是进程。"
+      @update:visible="aboutOpen = $event"
+      @cancel="aboutOpen = false"
+    />
   </PageShell>
 </template>
 
