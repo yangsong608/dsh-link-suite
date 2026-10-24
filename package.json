@@ -2,7 +2,7 @@
   "name": "dsh-link-suite",
   "version": "0.1.0",
   "private": true,
-  "description": "DSH Link 工程根：三份子工程的构建与检查入口（不装运行时依赖）",
+  "description": "DSH Link 工程根：协议 + 插件两份子工程的构建与检查入口（移动端已迁出为 ../moss-ai-app，见 docs/14）",
   "type": "module",
   "scripts": {
     "check": "node scripts/check.mjs",
@@ -11,9 +11,9 @@
     "test:protocol": "npm --prefix shared/protocol test",
     "build:plugin": "npm --prefix plugin run build",
     "test:plugin": "npm --prefix plugin test",
-    "typecheck:app": "npm --prefix app run typecheck",
-    "build:app": "npm --prefix app run build:h5",
-    "install:all": "npm --prefix shared/protocol ci && npm --prefix plugin ci && npm --prefix app ci",
+    "typecheck:app": "npm --prefix ../moss-ai-app run typecheck",
+    "build:app": "npm --prefix ../moss-ai-app run build:h5",
+    "install:all": "npm --prefix shared/protocol ci && npm --prefix plugin ci && npm --prefix ../moss-ai-app ci",
     "shots": "cd docs/prototype && node capture.mjs",
     "shots:app": "cd docs/prototype && node shot-app.mjs"
   },

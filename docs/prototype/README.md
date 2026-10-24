@@ -1,4 +1,5 @@
 # prototype · 高保真原型、出图与录屏
+> 注（2026-10-24）：文中 `app/...` 路径已迁出为独立工程 `moss-ai-app/...`（工作区根），阅读时按新位置理解。详见 [14-工程结构变更-app迁出.md](14-工程结构变更-app迁出.md)。
 
 这个目录有四件事：
 
@@ -15,7 +16,7 @@
 | | 出处 | 证明什么 |
 |---|---|---|
 | `../ui/p*.png`（23 张） | `index.html` | **设计定了**。它按 `08` 的尺寸施工，但它是手写的，不代表 App 能渲染 |
-| `./app-h5-devices.png` | `app/dist/build/h5` | **代码跑起来了**。这是 `app/src` 编译后的真东西 |
+| `./app-h5-devices.png` | `moss-ai-app/dist/build/h5` | **代码跑起来了**。这是 `moss-ai-app/src` 编译后的真东西 |
 
 这两张混着看是这类项目最常见的自欺：原型很漂亮，App 一跑是白屏。
 所以 `shot-app.mjs` 单独存在——它跑的是编译产物，不是原型。
@@ -28,7 +29,7 @@
 npm install          # 只有 puppeteer-core，不下载 Chromium
 npm run serve        # http://localhost:8788
 npm run shot         # 23 张设计图
-npm run shot:app     # App 实现凭证（先在 app/ 跑 build:h5）
+npm run shot:app     # App 实现凭证（先在 moss-ai-app/ 跑 build:h5）
 npm run verify       # 四档断点自检（不出图）
 npm run record       # 2 段录屏
 ```

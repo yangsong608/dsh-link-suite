@@ -23,12 +23,12 @@ jobs:
         with:
           node-version: '22'
 
-      # 三份子工程各自有锁文件；用 ci 而不是 install，锁文件漂移时直接失败。
-      - name: 安装依赖（协议 / 插件 / App）
+      # 两份子工程各自有锁文件；用 ci 而不是 install，锁文件漂移时直接失败。
+      # 移动端已于 2026-10-24 迁出为独立工程 moss-ai-app（docs/14），不在本 CI 覆盖范围。
+      - name: 安装依赖（协议 / 插件）
         run: |
           npm --prefix shared/protocol ci
           npm --prefix plugin ci
-          npm --prefix app ci
 
-      - name: 检查三份子工程
+      - name: 检查子工程
         run: npm run check

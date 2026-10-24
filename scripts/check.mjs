@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * 工程根的检查入口：按依赖顺序跑三份子工程的构建与测试。
+ * 工程根的检查入口：按依赖顺序跑子工程的构建与测试。
  *
  * 顺序不是随便排的：
  *   1. 协议先 build —— 插件的类型与运行时都读它的 dist/，不先编插件必红
  *   2. 插件再 build + test —— test 脚本自己会 build，但显式分开能让失败定位更快
- *   3. App 最后 —— 它只依赖协议源码（vite alias），不与插件耦合
+ *   3. App 最后 —— 2026-10-24 起 App 已迁出为独立工程 ../moss-ai-app（见 docs/14），
+ *      只在该目录存在时顺带跑它；它依赖自己的 protocol/ 快照，不与插件耦合
  *
  * 用法：
  *   node scripts/check.mjs                 全量（含 H5 构建）
@@ -19,12 +20,13 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const APP_ROOT = resolve(ROOT, '../moss-ai-app') // 独立后的移动端工程
 const argv = process.argv.slice(2)
 const skipAppBuild = argv.includes('--skip-app-build')
 const onlyArg = argv.find((a) => a.startsWith('--only='))
 const only = onlyArg === undefined ? undefined : new Set(onlyArg.slice('--only='.length).split(','))
 
-/** 一步检查。cwd 相对工程根，args 里不要带 shell 元字符（不经过 shell）。 */
+/** 一步检查。cwd 相对工程根（可越出到 ../moss-ai-app），args 里不要带 shell 元字符（不经过 shell）。 */
 const steps = [
   {
     id: 'protocol',
@@ -44,25 +46,27 @@ const steps = [
   },
   {
     id: 'app-typecheck',
-    label: 'App：vue-tsc 类型检查',
-    cwd: 'app',
+    label: 'App（../moss-ai-app）：vue-tsc 类型检查',
+    cwd: '../moss-ai-app',
     bin: 'npm',
     args: ['run', 'typecheck'],
-    requires: ['app/node_modules'],
+    requires: ['../moss-ai-app/node_modules'],
+    external: true,
   },
   ...(skipAppBuild
     ? []
     : [
         {
           id: 'app-build',
-          label: 'App：H5 构建（体积预算 400KB）',
-          cwd: 'app',
+          label: 'App（../moss-ai-app）：H5 构建（体积预算 400KB）',
+          cwd: '../moss-ai-app',
           bin: 'npm',
           args: ['run', 'build:h5'],
-          requires: ['app/node_modules'],
+          requires: ['../moss-ai-app/node_modules'],
+          external: true,
         },
       ]),
-]
+].filter((step) => !step.external || existsSync(APP_ROOT))
 
 /** 依赖缺失时给出可执行的修复命令，而不是一句 ENOENT。
  *
