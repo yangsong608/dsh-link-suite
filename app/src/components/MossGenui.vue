@@ -85,7 +85,7 @@ function maxOf(points: readonly { value: number }[]): number {
         </view>
       </view>
 
-      <scroll-view v-else-if="node.type === 'table'" class="g-table-wrap" scroll-x>
+      <view v-else-if="node.type === 'table'" class="g-table-wrap">
         <view v-if="table(node)" class="g-table">
           <view class="g-tr g-th">
             <text v-for="(c, j) in table(node)!.columns" :key="j" class="g-td">{{ c }}</text>
@@ -94,7 +94,8 @@ function maxOf(points: readonly { value: number }[]): number {
             <text v-for="(c, j) in row" :key="j" class="g-td">{{ c }}</text>
           </view>
         </view>
-      </scroll-view>
+        <text v-else class="g-fallback mono">{{ JSON.stringify(node) }}</text>
+      </view>
 
       <view v-else-if="node.type === 'chart'" class="g-chart">
         <view v-for="(p, j) in chartPoints(node)" :key="j" class="g-bar-row">
@@ -196,7 +197,15 @@ function maxOf(points: readonly { value: number }[]): number {
 .g-kv-k { font-size: 11.5px; color: var(--t3); }
 .g-kv-v { font-size: 11.5px; color: var(--t1); text-align: right; }
 
-.g-table-wrap { max-width: 100%; }
+/* 用 overflow 而不是 scroll-view：App 端 scroll-view 对 inline-block
+   子元素经常量出 0 宽，表格直接不可见。 */
+.g-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
 .g-table { display: inline-block; min-width: 100%; }
 .g-tr { display: flex; border-bottom: 1px solid var(--bd); }
 .g-th { background: var(--s2); }
@@ -231,6 +240,8 @@ function maxOf(points: readonly { value: number }[]): number {
 }
 .g-opt:active { background: var(--s2); }
 .g-opt text { font-size: 12.5px; color: var(--acc); }
+
+.g-fallback { font-size: 10.5px; color: var(--t3); }
 
 .g-code { padding: 9px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--bd); }
 .g-code-lang { display: block; font-size: 9px; color: var(--t3); margin-bottom: 5px; }
