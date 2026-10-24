@@ -918,6 +918,22 @@ export function createHandlers(): GatewayHandlers {
 
       if (attempt(callId, answers)) return { ok: true, via: 'client' }
 
+      /*
+       * 更可靠的来源：宿主的 `userQuestions` **投影**。
+       *
+       * answer() 内部就是读它（stateOf(session,'userQuestions').questions.active
+       * 里 state==='continued' 的那些），所以这里直接读同一份，拿到的 callId
+       * 与问题 id 必然一致。事件扫描只是它的兜底。
+       */
+      const viaProjection = readPendingAsk(rc, agent)
+      if (viaProjection !== undefined) {
+        const rebuilt = viaProjection.questions.map((q) => {
+          const mine = answers.find((a) => a.id === q.id)
+          return { id: q.id, selected: mine?.selected ?? answers[0]?.selected ?? [] }
+        })
+        if (attempt(viaProjection.callId, rebuilt)) return { ok: true, via: 'projection' }
+      }
+
       const recovered = await findLastAsk(rc, sessionId)
       if (recovered !== undefined) {
         // 用宿主事件里的问题 id 重建答案：客户端发来的 id 可能是我们补的序号
@@ -1473,4 +1489,39 @@ async function findLastAsk(
     found = { callId, questions }
   }
   return found
+}
+
+/**
+ * 从宿主投影里读待答提问。
+ *
+ * 投影结构与 answer() 内部一致：`questions.active` 中 state==='continued' 的项。
+ * 这是唯一权威来源——事件与 trace 里的 id 都可能是另一套编号。
+ */
+function readPendingAsk(
+  rc: RouteContext,
+  agent: unknown,
+): { callId: string; questions: { id: string }[] } | undefined {
+  const projections = rc.ctx.get<{ stateOf?: (session: unknown, key: string) => unknown }>('sessionProjections', false)
+  if (projections?.stateOf === undefined) return undefined
+  const session = (agent as { session?: unknown } | undefined)?.session
+  if (session === undefined) return undefined
+
+  try {
+    const state = projections.stateOf(session, 'userQuestions') as
+      | { questions?: { active?: { callId?: string; state?: string; id?: string; questions?: { id?: string }[] }[] } }
+      | undefined
+    const active = state?.questions?.active ?? []
+    for (const item of active) {
+      if (item.state !== 'continued') continue
+      const callId = typeof item.callId === 'string' ? item.callId : ''
+      if (callId.length === 0) continue
+      const qs = Array.isArray(item.questions)
+        ? item.questions.map((q, i) => ({ id: String(q.id ?? `q${i}`) }))
+        : [{ id: 'answer' }]
+      return { callId, questions: qs }
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }
