@@ -887,7 +887,14 @@ export function createHandlers(): GatewayHandlers {
       const sessionId = str(p, 'sessionId')
       const callId = str(p, 'callId')
       const raw = Array.isArray(p['answers']) ? p['answers'] : []
-      if (callId.length === 0 || raw.length === 0) throw new RpcError('rpc/bad-args', '缺少 callId 或答案')
+      /*
+       * callId 为空不再直接抛错。
+       *
+       * 客户端拿不到 callId 是常见情况（trace 帧里可能没有这个字段），
+       * 直接 bad-args 会让失败现场都不落盘，诊断等于瞎猜。空就跳过
+       * 客户端那一次尝试，走投影/事件。
+       */
+      if (raw.length === 0) throw new RpcError('rpc/bad-args', '缺少答案')
 
       const answers = raw
         .map((x) => x as { id?: unknown; selected?: unknown })
@@ -916,7 +923,7 @@ export function createHandlers(): GatewayHandlers {
         }
       }
 
-      if (attempt(callId, answers)) return { ok: true, via: 'client' }
+      if (callId.length > 0 && attempt(callId, answers)) return { ok: true, via: 'client' }
 
       /*
        * 更可靠的来源：宿主的 `userQuestions` **投影**。
