@@ -848,6 +848,25 @@ async function approve(item: Extract<Item, { k: 'approval' }>, ok: boolean): Pro
   }
 }
 
+/** 选项式提问的回答：当作一条普通消息发回去。 */
+function answerChoice(label: string): void {
+  haptic('medium')
+  void (async () => {
+    const link = currentLink()
+    if (link === undefined) { uni.showToast({ title: '尚未连接主机', icon: 'none' }); return }
+    try {
+      await link.call('session.prompt', {
+        sessionId: sessionId.value,
+        text: label,
+        requestId: `r_${Date.now().toString(36)}`,
+      })
+      uni.showToast({ title: '已回复', icon: 'none' })
+    } catch (e) {
+      handleError(e, '发送失败：')
+    }
+  })()
+}
+
 async function send(): Promise<void> {
   const text = draft.value.trim()
   // 只发附件也是合法操作（"把这张图给它看"），所以空文字不直接返回
@@ -1197,7 +1216,7 @@ onUnmounted(() => {
         <view v-else-if="it.k === 'assist'" class="ai">
           <view class="ai-bar" />
           <view class="ai-body">
-            <MossMarkdown class="ai-t" :text="it.text" />
+            <MossMarkdown class="ai-t" :text="it.text" @answer="answerChoice" />
             <text v-if="it.streaming" class="cursor" />
             <text class="ai-at mono">{{ it.at }}</text>
           </view>
