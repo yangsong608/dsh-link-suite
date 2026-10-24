@@ -947,6 +947,13 @@ export function createHandlers(): GatewayHandlers {
         }
       }
 
+      /*
+       * 失败现场落盘。
+       *
+       * 反复“猜”比多写一个文件贵得多：把投影结构、callId、问题 id 全部
+       * 写出来，下次直接读文件就能定位，不用再让用户截图。
+       */
+      await dumpAnswerDebug(rc, sessionId, agent, callId, answers)
       return { ok: false, sentCallId: callId }
     },
 
@@ -1524,4 +1531,43 @@ function readPendingAsk(
     return undefined
   }
   return undefined
+}
+
+/** 把一次失败的回答现场写到 ~/.dsh/dsh-link/answer-debug.json。 */
+async function dumpAnswerDebug(
+  rc: RouteContext,
+  sessionId: string,
+  agent: unknown,
+  callId: string,
+  answers: readonly { id: string; selected: string[] }[],
+): Promise<void> {
+  try {
+    const fs = await import('node:fs/promises')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const dir = path.join(os.homedir(), '.dsh', 'dsh-link')
+
+    const projections = rc.ctx.get<{ stateOf?: (session: unknown, key: string) => unknown }>('sessionProjections', false)
+    const session = (agent as { session?: unknown } | undefined)?.session
+    let state: unknown
+    let stateError: string | undefined
+    try {
+      state = projections?.stateOf?.(session, 'userQuestions')
+    } catch (e) {
+      stateError = e instanceof Error ? e.message : String(e)
+    }
+
+    const payload = {
+      at: new Date().toISOString(),
+      sessionId,
+      sentCallId: callId,
+      answers,
+      hasStateOf: projections?.stateOf !== undefined,
+      hasSession: session !== undefined,
+      stateError,
+      state,
+    }
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(path.join(dir, 'answer-debug.json'), `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+  } catch { /* 诊断失败不能影响主流程 */ }
 }
