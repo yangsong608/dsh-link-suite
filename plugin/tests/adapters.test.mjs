@@ -90,7 +90,9 @@ test('tool/call 用真实字段 name/arguments（dsh 的 SessionEventMap）', ()
   const item = toTraceItem({ type: 'tool/call', seq: 4, data: { name: 'Bash', arguments: long } })
   assert.equal(item.k, 'tool')
   assert.equal(item.tool, 'Bash', '必须取到真实工具名')
-  assert.equal(item.input.length, 200, 'input 截断到 200')
+  // 上限从 200 提到 4000：todo_write / ask_user_question 的完整 JSON
+  // 必须完整到达客户端，否则清单与选项永远解析不出来
+  assert.equal(item.input.length, 4000, 'input 截断到 4000')
 })
 
 test('tool/call 从 arguments 解析出可读目标', () => {
