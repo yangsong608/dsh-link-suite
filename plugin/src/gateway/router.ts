@@ -1564,6 +1564,8 @@ async function dumpAnswerDebug(
       answers,
       hasStateOf: projections?.stateOf !== undefined,
       hasSession: session !== undefined,
+      agentSessionId: (session as { id?: unknown } | undefined)?.id ?? null,
+      socketSessionMatch: String((session as { id?: unknown } | undefined)?.id ?? '') === sessionId,
       stateError,
       state,
     }
