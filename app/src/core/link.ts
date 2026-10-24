@@ -23,7 +23,7 @@ interface Attached {
 
 let attached: Attached | undefined
 /** 会话事件监听器（由对话页注册，切页时替换）。 */
-let sessionListener: ((method: string, payload: unknown) => void) | undefined
+let sessionListener: ((method: string, payload: unknown, channel?: string) => void) | undefined
 
 /** 当前连接（供页面判断"能不能发消息"）。 */
 export function currentLink(): Link | undefined {
@@ -136,8 +136,8 @@ export function connectDevice(device: DeviceCard): Link | undefined {
 
   // 会话事件：统一入口，按方法名分发给当前注册的监听器。
   // 不断开时也保持注册，页面切回来时 listener 已经是新的那个。
-  link.on('session.trace', (payload) => sessionListener?.('session.trace', payload))
-  link.on('session.stream', (payload) => sessionListener?.('session.stream', payload))
+  link.on('session.trace', (payload, ch) => sessionListener?.('session.trace', payload, ch))
+  link.on('session.stream', (payload, ch) => sessionListener?.('session.stream', payload, ch))
   link.on('approval.request', (payload) => sessionListener?.('approval.request', payload))
   link.on('lock.changed', (payload) => sessionListener?.('lock.changed', payload))
 
@@ -181,7 +181,9 @@ export function disconnect(): void {
 }
 
 /** 对话页进出时注册/取消会话事件监听。 */
-export function setSessionListener(listener: ((method: string, payload: unknown) => void) | undefined): void {
+export function setSessionListener(
+  listener: ((method: string, payload: unknown, channel?: string) => void) | undefined,
+): void {
   sessionListener = listener
 }
 
