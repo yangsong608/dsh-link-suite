@@ -57,6 +57,13 @@ const planSteps = ref<PlanStep[]>([])
 interface TodoItem { text: string; status: string }
 const todoItems = ref<TodoItem[]>([])
 const todoDone = computed(() => todoItems.value.filter((x) => x.status === 'completed').length)
+/**
+ * 全部完成就不再占地方。
+ *
+ * 原来只判 length > 0：任务全做完了，那条「任务 5/5」还挂在输入区上方，
+ * 既没过期信号也关不掉。清完就该消失。
+ */
+const todoAllDone = computed(() => todoItems.value.length > 0 && todoDone.value === todoItems.value.length)
 
 interface AskItem { question: string; options: string[] }
 const askCard = ref<AskItem | undefined>(undefined)
@@ -67,6 +74,8 @@ function readTodos(args: string): void {
     const o = JSON.parse(args) as { todos?: { content?: string; status?: string }[] }
     if (!Array.isArray(o.todos)) return
     todoItems.value = o.todos.map((t) => ({ text: String(t.content ?? ''), status: String(t.status ?? 'pending') }))
+    // 全部完成时直接收起来，连状态都清掉
+    if (todoItems.value.every((t) => t.status === 'completed')) todoItems.value = []
   } catch { /* 参数不是 JSON 就忽略 */ }
 }
 
@@ -1383,7 +1392,7 @@ onUnmounted(() => {
     </view>
 
     <!-- todo：来自 todo_write 工具调用 -->
-    <view v-if="todoItems.length > 0 && planSteps.length === 0" class="plan-bar">
+    <view v-if="todoItems.length > 0 && !todoAllDone && planSteps.length === 0" class="plan-bar">
       <view class="plan-head">
         <text class="plan-t">任务 {{ todoDone }}/{{ todoItems.length }}</text>
         <view class="plan-chev" :class="{ open: planOpen }" @tap="planOpen = !planOpen" />
