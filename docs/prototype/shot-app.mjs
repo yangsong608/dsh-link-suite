@@ -1,14 +1,14 @@
 /**
- * 截 App 的真实 H5 渲染 —— 不是原型，是 `app/src` 编译出来的东西。
+ * 截 App 的真实 H5 渲染 —— 不是原型，是 `moss-ai-app/src` 编译出来的东西。
  *
  *   node shot-app.mjs
  *
  * 为什么这张图和 `p*.png` 要分开：
  * `p*.png` 出自 `index.html`（设计原型），它证明"设计定了"；
- * 这张出自 `app/dist/build/h5`（真代码），它证明"代码跑起来了"。
+ * 这张出自 `moss-ai-app/dist/build/h5`（真代码），它证明"代码跑起来了"。
  * 两者混为一谈是这类项目最常见的自欺——原型再漂亮，也不代表 App 能渲染。
  *
- * 前置：先在 app/ 下 `npm run build:h5`。
+ * 前置：先在 moss-ai-app/ 下 `npm run build:h5`。
  */
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
@@ -18,13 +18,13 @@ import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer-core'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const dist = resolve(here, '..', '..', 'app', 'dist', 'build', 'h5')
+const dist = resolve(here, '..', '..', '..', 'moss-ai-app', 'dist', 'build', 'h5')
 // 放 prototype 而不是 ui/：ui/ 里那 23 张是"设计图"（出自 index.html），
-// 这一张是"实现凭证"（出自 app/dist）。两个目录混放，评审会分不清哪张能做准。
+// 这一张是"实现凭证"（出自 moss-ai-app/dist）。两个目录混放，评审会分不清哪张能做准。
 const out = resolve(here, 'app-h5-devices.png')
 
 if (!existsSync(join(dist, 'index.html'))) {
-  console.error(`找不到 ${dist}/index.html。先在 app/ 下跑 npm run build:h5`)
+  console.error(`找不到 ${dist}/index.html。先在 moss-ai-app/ 下跑 npm run build:h5`)
   process.exit(1)
 }
 

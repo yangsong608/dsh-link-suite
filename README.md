@@ -4,14 +4,17 @@
 
 > 状态：**端到端可用**。配对、网关、会话转发、对话、产物、文件预览、模型切换、队列、
 > plan/todo、genui 组件渲染都已跑通；真机验证过的项见下表。已知限制也写在下面，不藏。
+>
+> **2026-10-24：移动端已迁出为独立工程 [`../moss-ai-app/`](../moss-ai-app/)**（还要继续加新功能），
+> 本仓库保留插件 + 共享协议；路径变更说明见 [`docs/14-工程结构变更-app迁出.md`](docs/14-工程结构变更-app迁出.md)。
 
 ## 这是什么
 
 | 子工程 | 说明 |
 |---|---|
 | `plugin/` | DSH 宿主插件 `dsh-link`：多设备 WSS 网关（默认 7443）+ `/dsh-link` 本机 HTTP 面 |
-| `app/` | uni-app 移动端：设备 / 会话 / 对话 / 设置，MOSS 皮肤 × 明暗 |
 | `shared/protocol/` | 两侧共用的唯一契约：帧格式、**57 个方法**、错误码、锁屏策略 |
+| `../moss-ai-app/`（独立工程） | MOSS 移动端：设备 / 会话 / 对话 / 设置，MOSS 皮肤 × 明暗。2026-10-24 自 `app/` 迁出，协议包已内嵌 |
 | `docs/` | 设计文档、页面 UI、可点原型、验收记录与截图 |
 
 ## 能做什么
@@ -46,7 +49,7 @@
 
 ## 快速开始
 
-三份工程各自装依赖、各自构建（没有 workspace 根）：
+协议与插件各自装依赖、各自构建（没有 workspace 根）；移动端在独立工程 `moss-ai-app/` 里：
 
 ```bash
 # ① 共享协议（先编，另外两个依赖它）
@@ -60,8 +63,8 @@ ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSe
   --expose-internals "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" \
   plugin --profile desktop add "dsh-link@link:$PWD/plugin"
 
-# ③ App
-cd ../app && npm install
+# ③ 移动端（独立工程 moss-ai-app，已迁出本仓库）
+cd ../moss-ai-app && npm install
 npm run typecheck
 npm run build:h5          # H5 产物可用于 QA
 ```
@@ -71,12 +74,12 @@ App 端（安卓）用 HBuilderX 打包。**前端改动必须重新打包才能
 ## 自测与验收
 
 ```bash
-node scripts/check.mjs      # 协议 + 插件 + App 类型/构建，全绿才算通过
+node scripts/check.mjs      # 协议 + 插件（+ ../moss-ai-app 存在时连它一起）全绿才算通过
 ```
 
 - 协议：帧编解码、序号窗口、方法白名单、锁屏策略
 - 插件：manifest、锁屏、设备表、限流、适配器、changes、上传、prompt+附件、会话创建、网关 e2e
-- App：`vue-tsc` + uni 构建
+- App：`vue-tsc` + uni 构建（独立工程 `../moss-ai-app`，不在本仓库时自动跳过）
 - 真机/夹具截图与逐条验收记录见 [`docs/13-验收状态.md`](docs/13-验收状态.md)
 
 ## 已知限制（如实列出）
@@ -102,6 +105,7 @@ node scripts/check.mjs      # 协议 + 插件 + App 类型/构建，全绿才算
 3. [`docs/03-产品设计-v2.md`](docs/03-产品设计-v2.md) / [`docs/08-页面UI设计-v2.md`](docs/08-页面UI设计-v2.md)
 4. [`docs/09-网络访问机制.md`](docs/09-网络访问机制.md) — 局域网/中继、攻击面
 5. [`docs/13-验收状态.md`](docs/13-验收状态.md) — **逐条验收（含根因与截图）**
+6. [`docs/14-工程结构变更-app迁出.md`](docs/14-工程结构变更-app迁出.md) — **app → moss-ai-app 迁移记录与路径映射**
 
 原型：[`docs/prototype/index.html`](docs/prototype/index.html)
 
