@@ -36,6 +36,8 @@ export const SUPPORTED = new Set([
   'steps',
   'badge',
   'chart',
+  // 选项式提问：点选后由客户端把选择作为一条消息发回
+  'choice',
 ])
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -131,4 +133,33 @@ export function chartPoints(node: GenuiNode): ChartPoint[] {
     out.push({ label: String(raw['label'] ?? ''), value })
   }
   return out
+}
+
+export interface ChoiceOption { readonly label: string; readonly value: string }
+
+/**
+ * 选项式提问。
+ *
+ * 约定：dsh-ui fence 里写
+ *   { "type": "choice", "question": "…", "options": ["A", "B"], "multi": false }
+ * options 可以是字符串，也可以是 { label, value }。
+ *
+ * 为什么放在 dsh-ui 而不是新造一个事件：genui 本来就在渲染结构化 UI，
+ * 提问本质上就是"一个有按钮的组件"，复用同一条通道最省事。
+ */
+export function choice(node: GenuiNode): { question: string; options: readonly ChoiceOption[]; multi: boolean } | undefined {
+  const question = str(node, 'question') || str(node, 'content')
+  const raw = arr(node, 'options')
+  if (question.length === 0 || raw.length === 0) return undefined
+  const options: ChoiceOption[] = []
+  for (const o of raw) {
+    if (typeof o === 'string') { options.push({ label: o, value: o }); continue }
+    if (typeof o === 'object' && o !== null) {
+      const r = o as Record<string, unknown>
+      const label = String(r['label'] ?? r['value'] ?? '')
+      if (label.length > 0) options.push({ label, value: String(r['value'] ?? label) })
+    }
+  }
+  if (options.length === 0) return undefined
+  return { question, options, multi: node['multi'] === true }
 }

@@ -9,9 +9,15 @@
  * 明确告知比假装渲染完整更诚实。
  */
 import { computed } from 'vue'
-import { arr, chartPoints, num, pairs, parseGenui, str, table, type GenuiNode } from '@/core/genui'
+import { arr, chartPoints, choice, num, pairs, parseGenui, str, table, type GenuiNode } from '@/core/genui'
 
 const props = defineProps<{ raw: string }>()
+/** 选项式提问：把用户的选择抛给上层，由它作为一条消息发回宿主。 */
+const emit = defineEmits<{ (e: 'answer', text: string): void }>()
+
+function pick(label: string): void {
+  emit('answer', label)
+}
 
 const parsed = computed(() => parseGenui(props.raw))
 
@@ -97,6 +103,16 @@ function maxOf(points: readonly { value: number }[]): number {
             <view class="g-bar" :style="{ width: Math.max(2, Math.round((Math.abs(p.value) / maxOf(chartPoints(node))) * 100)) + '%' }" />
           </view>
           <text class="g-bar-v mono">{{ p.value }}</text>
+        </view>
+      </view>
+
+      <!-- 选项式提问：点一下就作为回答发出 -->
+      <view v-else-if="node.type === 'choice' && choice(node)" class="g-choice">
+        <text class="g-q">{{ choice(node)!.question }}</text>
+        <view class="g-options">
+          <view v-for="(o, j) in choice(node)!.options" :key="j" class="g-opt" @tap="pick(o.label)">
+            <text>{{ o.label }}</text>
+          </view>
         </view>
       </view>
 
@@ -203,6 +219,18 @@ function maxOf(points: readonly { value: number }[]): number {
 .g-bar-track { flex: 1; height: 8px; border-radius: 4px; background: var(--s2); overflow: hidden; }
 .g-bar { height: 8px; border-radius: 4px; background: var(--acc); }
 .g-bar-v { flex: none; width: 48px; text-align: right; font-size: 10px; color: var(--t3); }
+
+.g-choice { display: flex; flex-direction: column; gap: 8px; }
+.g-q { font-size: 13px; line-height: 20px; color: var(--t1); }
+.g-options { display: flex; flex-direction: column; gap: 7px; }
+.g-opt {
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--acc);
+  background: var(--acc-soft);
+}
+.g-opt:active { background: var(--s2); }
+.g-opt text { font-size: 12.5px; color: var(--acc); }
 
 .g-code { padding: 9px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--bd); }
 .g-code-lang { display: block; font-size: 9px; color: var(--t3); margin-bottom: 5px; }

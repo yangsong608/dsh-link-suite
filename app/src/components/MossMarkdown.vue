@@ -13,6 +13,7 @@ import { looksLikeMarkdown, parseMarkdown, type Inline } from '@/core/markdown'
 import MossGenui from '@/components/MossGenui.vue'
 
 const props = withDefaults(defineProps<{ text: string }>(), { text: '' })
+const emit = defineEmits<{ (e: 'answer', text: string): void }>()
 
 const blocks = computed(() => {
   const src = props.text ?? ''
@@ -46,7 +47,7 @@ function cls(seg: Inline): string {
       <view v-else-if="b.t === 'hr'" class="hr" />
 
       <!-- dsh-ui fence：按 genui 子集渲染（text/list/table/stat/chart…） -->
-      <MossGenui v-else-if="b.t === 'genui'" :raw="b.raw" />
+      <MossGenui v-else-if="b.t === 'genui'" :raw="b.raw" @answer="emit('answer', $event)" />
 
       <view v-else-if="b.t === 'quote'" class="quote">
         <text v-for="(s, j) in segments(b.inline)" :key="j" class="q-text" :class="cls(s)">{{ s.v }}</text>
