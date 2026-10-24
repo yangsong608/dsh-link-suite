@@ -143,6 +143,7 @@ function openUnlock(): void {
       if (link === undefined || password.length === 0) return
       void link.call('lock.unlock', { password }).then(() => {
         errorText.value = ''
+  askCard.value = undefined
         uni.showToast({ title: '已解锁', icon: 'none' })
         void loadPlan()
       }).catch((e: unknown) => {
@@ -1010,8 +1011,13 @@ function onSessionEvent(method: string, payload: unknown): void {
     if (kind === 'tool') {
       const name = String(data['tool'] ?? '')
       const args = String(data['input'] ?? '')
+      const phase = String(data['phase'] ?? '')
       if (name === 'todo_write') readTodos(args)
-      if (name === 'ask_user_question') readAsk(args)
+      if (name === 'ask_user_question') {
+        // 结果回来（或新一轮开始）说明这个提问已经不需要展示
+        if (phase === 'result') askCard.value = undefined
+        else readAsk(args)
+      }
     }
     const detail =
       kind === 'tool' ? String(data['target'] ?? '')
@@ -1392,7 +1398,10 @@ onUnmounted(() => {
 
     <!-- 提问：工具调用里的选项。手机端只能看，回答要在电脑上 -->
     <view v-if="askCard" class="ask-bar">
-      <text class="ask-q">{{ askCard.question }}</text>
+      <view class="ask-head">
+        <text class="ask-q">{{ askCard.question }}</text>
+        <text class="ask-x" @tap="askCard = undefined">×</text>
+      </view>
       <view v-for="(o, i) in askCard.options" :key="i" class="ask-opt">
         <text>{{ o }}</text>
       </view>
@@ -2148,7 +2157,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 7px;
 }
-.ask-q { font-size: 12.5px; line-height: 19px; color: var(--t1); }
+.ask-head { display: flex; align-items: flex-start; gap: 10px; }
+.ask-x { flex: none; width: 24px; height: 24px; text-align: center; line-height: 22px; font-size: 17px; color: var(--t3); }
+.ask-q { flex: 1; font-size: 12.5px; line-height: 19px; color: var(--t1); }
 .ask-opt {
   padding: 7px 10px;
   border-radius: 8px;
