@@ -46,6 +46,42 @@ const wide = ref(false)
 
 interface PlanStep { text: string; status: string }
 const planSteps = ref<PlanStep[]>([])
+
+/*
+ * todo 与提问都来自**工具调用**，不是会话投影。
+ *
+ * 实测（在 dsh 源码里 grep）：`todo_write` / `ask_user_question` 只出现在
+ * experimental/claude-code-mods，没有对应的 sessionProjections 注册。
+ * 也就是说宿主的会话投影里没有它们，只能从 tool/call 的 arguments 里读。
+ */
+interface TodoItem { text: string; status: string }
+const todoItems = ref<TodoItem[]>([])
+const todoDone = computed(() => todoItems.value.filter((x) => x.status === 'completed').length)
+
+interface AskItem { question: string; options: string[] }
+const askCard = ref<AskItem | undefined>(undefined)
+
+/** 从 todo_write 的参数里取清单（字段是 todos[].content/status）。 */
+function readTodos(args: string): void {
+  try {
+    const o = JSON.parse(args) as { todos?: { content?: string; status?: string }[] }
+    if (!Array.isArray(o.todos)) return
+    todoItems.value = o.todos.map((t) => ({ text: String(t.content ?? ''), status: String(t.status ?? 'pending') }))
+  } catch { /* 参数不是 JSON 就忽略 */ }
+}
+
+/** 从 ask_user_question 的参数里取问题与选项。 */
+function readAsk(args: string): void {
+  try {
+    const o = JSON.parse(args) as { questions?: { question?: string; options?: { label?: string }[] }[] }
+    const first = Array.isArray(o.questions) ? o.questions[0] : undefined
+    if (first === undefined) return
+    askCard.value = {
+      question: String(first.question ?? ''),
+      options: Array.isArray(first.options) ? first.options.map((x) => String(x.label ?? '')) : [],
+    }
+  } catch { /* 忽略 */ }
+}
 const planActive = ref(false)
 const planOpen = ref(false)
 
@@ -1032,6 +1068,8 @@ function onSessionEvent(method: string, payload: unknown): void {
         if (ok !== undefined) last.ok = ok
         // 结果里若带有更准确的工具名，补上
         if (tool.length > 0 && last.tool !== tool) last.tool = tool
+        if (tool === 'todo_write') readTodos(String(data['arguments'] ?? ''))
+        if (tool === 'ask_user_question') readAsk(String(data['arguments'] ?? ''))
       } else if (phase === 'result') {
         // 没有可合并的上一行（例如滚动到历史中段才断线重连）：仍然显示，但标为结果
         items.value.push({ k: 'activity', tool, summary, ms, ok: ok ?? true })
@@ -1331,6 +1369,29 @@ onUnmounted(() => {
           <text class="plan-text">{{ st.text }}</text>
         </view>
       </view>
+    </view>
+
+    <!-- todo：来自 todo_write 工具调用 -->
+    <view v-if="todoItems.length > 0 && planSteps.length === 0" class="plan-bar">
+      <view class="plan-head">
+        <text class="plan-t">任务 {{ todoDone }}/{{ todoItems.length }}</text>
+        <view class="plan-chev" :class="{ open: planOpen }" @tap="planOpen = !planOpen" />
+      </view>
+      <view v-if="planOpen" class="plan-list">
+        <view v-for="(t, i) in todoItems" :key="i" class="plan-item" :class="t.status">
+          <text class="plan-dot" />
+          <text class="plan-text">{{ t.text }}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 提问：工具调用里的选项。手机端只能看，回答要在电脑上 -->
+    <view v-if="askCard" class="ask-bar">
+      <text class="ask-q">{{ askCard.question }}</text>
+      <view v-for="(o, i) in askCard.options" :key="i" class="ask-opt">
+        <text>{{ o }}</text>
+      </view>
+      <text class="ask-hint">这项要在电脑上回答（工具在等宿主的回答，手机端无法代替）</text>
     </view>
 
     <!-- 快捷指令：走宿主的命令注册表 -->
@@ -2073,6 +2134,24 @@ onUnmounted(() => {
 .diff-txt { flex: 1; min-width: 0; font-size: 11.5px; color: var(--t2); white-space: pre-wrap; word-break: break-all; }
 .diff-line.add .diff-sig, .diff-line.add .diff-txt { color: var(--acc); }
 .diff-line.del .diff-sig, .diff-line.del .diff-txt { color: var(--danger); }
+
+.ask-bar {
+  padding: 10px 14px;
+  border-top: 1px solid var(--bd);
+  background: var(--s1);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ask-q { font-size: 12.5px; line-height: 19px; color: var(--t1); }
+.ask-opt {
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--bd);
+  background: var(--s2);
+}
+.ask-opt text { font-size: 12px; color: var(--t2); }
+.ask-hint { font-size: 10.5px; color: var(--t3); }
 
 .plan-bar {
   padding: 8px 14px;
