@@ -22,6 +22,14 @@ export interface Caps {
   readonly git: 0 | 1
   /** GitHub 远程仓库浏览（需要 PC 侧 token）。默认关闭。 */
   readonly gh: 0 | 1
+  /**
+   * 工作台同步（`wb.*`）。
+   *
+   * 默认 1（协议层假定可用），由宿主在 `device.info` 里按**真实探测结果**覆盖：
+   * 探测 `/workbench-api/sync/meta` 可达才是 1，否则 0。
+   * 这样"宿主没装 dsh-workbench"不会被 App 当成网络故障。
+   */
+  readonly workbench: 0 | 1
 }
 
 export const DEFAULT_CAPS: Caps = {
@@ -34,6 +42,7 @@ export const DEFAULT_CAPS: Caps = {
   queue: 1,
   git: 1,
   gh: 0,
+  workbench: 1,
 }
 
 /**
@@ -121,6 +130,33 @@ export const METHODS = [
   // GitHub 远程仓库（M3，PC 侧持 token，默认关闭）
   'repo.gh.tree',
   'repo.gh.file',
+
+  // 工作台同步（dsh-workbench 的 loopback HTTP 面，经网关代理）
+  //
+  // 读 = 看数据，写 = 改数据。读方法走 viewer + read（半锁可看），
+  // 写方法一律 operator + unlocked —— 工作台的数据是用户的生产资料，
+  // 与 fs.upload / session.prompt 同一层级，不给"半锁还能记专注"的例外。
+  //
+  // 参数约定（协议层没有 zod，形状写在注释里，App 与宿主照此对齐）：
+  //   wb.meta.get      {}
+  //   wb.delta.pull    { since?: string; entity?: string; limit?: number }
+  //   wb.delta.push    { changes: WbChange[] }
+  //   wb.state.get     {}（全量快照，代理宿主 GET /state，只读）
+  //   wb.notes.put     { note: { id: string; ... } }
+  //   wb.notes.delete  { id: string }
+  //   wb.focus.add     { taskId: string; minutes: number; completed: boolean }
+  //                    → { id, startedAt, accepted, conflicts }（走宿主的增量同步）
+  //   wb.news.list     {}
+  //   wb.news.fetchNow {}（当前为占位：返回 { queued:false, reason:'not-implemented' }）
+  'wb.meta.get',
+  'wb.delta.pull',
+  'wb.delta.push',
+  'wb.state.get',
+  'wb.notes.put',
+  'wb.notes.delete',
+  'wb.focus.add',
+  'wb.news.list',
+  'wb.news.fetchNow',
 
   // 插件
   'plugin.list',

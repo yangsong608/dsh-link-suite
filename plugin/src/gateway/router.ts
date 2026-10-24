@@ -14,12 +14,13 @@ import { extname, join } from 'node:path'
 
 import { encodePairUri, encodeQr, pairPayloadFromEndpoint } from '@dsh-link/protocol'
 
-import { RpcError, DEFAULT_CAPS, METHOD_POLICY, type DeviceRole, type Method } from '@dsh-link/protocol'
+import { RpcError, DEFAULT_CAPS, METHOD_POLICY, type DeviceRole, type Method, type WbChange } from '@dsh-link/protocol'
 import type { DshContext, SessionController, PluginManager, WorkspaceRegistry, WorkspaceController } from '../dsh.js'
 import type { LinkConfig } from '../config.js'
 import type { LockService } from '../lock/index.js'
 import type { DeviceRegistry } from './devices.js'
 import { buildChanges, latestDiffForPath } from '../adapters/changes.js'
+import { createWorkbench } from '../adapters/workbench.js'
 import { toSessionSummaries, type HostSessionSummary } from '../adapters/sessions.js'
 
 /** 软读会话服务；宿主没装会话能力时返回 undefined，由 handler 决定怎么降级。 */
@@ -95,7 +96,66 @@ const str = (params: Record<string, unknown>, key: string): string => {
   return v
 }
 
+/** 可选字符串参数：缺省 / 空串都返回 undefined（不报错）。 */
+const optStr = (params: Record<string, unknown>, key: string): string | undefined => {
+  const v = params[key]
+  if (v === undefined) return undefined
+  if (typeof v !== 'string') throw new RpcError('rpc/bad-args', `参数 ${key} 必须是字符串`)
+  return v.length === 0 ? undefined : v
+}
+
+/** 可选数字参数：缺省返回 undefined；非有限数字报错。 */
+const optNum = (params: Record<string, unknown>, key: string): number | undefined => {
+  const v = params[key]
+  if (v === undefined) return undefined
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    throw new RpcError('rpc/bad-args', `参数 ${key} 必须是数字`)
+  }
+  return v
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * 校验 `wb.delta.push` 的 changes。
+ *
+ * 在网关这一层校验，而不是让宿主去猜：客户端传了半条变更时，
+ * 应该得到 `rpc/bad-args`（"你参数写错了"），而不是宿主的 500。
+ */
+const wbChanges = (params: Record<string, unknown>): WbChange[] => {
+  const raw = params['changes']
+  if (!Array.isArray(raw)) throw new RpcError('rpc/bad-args', '参数 changes 必须是数组')
+  if (raw.length > 5_000) throw new RpcError('rpc/bad-args', '单次 push 的变更不能超过 5000 条')
+  return raw.map((item, index) => {
+    if (!isPlainObject(item)) throw new RpcError('rpc/bad-args', `changes[${String(index)}] 必须是对象`)
+    const { entity, id, op, updatedAt, row } = item
+    if (typeof entity !== 'string' || entity.length === 0) {
+      throw new RpcError('rpc/bad-args', `changes[${String(index)}].entity 必须是非空字符串`)
+    }
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new RpcError('rpc/bad-args', `changes[${String(index)}].id 必须是非空字符串`)
+    }
+    if (op !== 'upsert' && op !== 'delete') {
+      throw new RpcError('rpc/bad-args', `changes[${String(index)}].op 只能是 upsert / delete`)
+    }
+    if (typeof updatedAt !== 'string' || updatedAt.length === 0) {
+      throw new RpcError('rpc/bad-args', `changes[${String(index)}].updatedAt 必须是非空字符串`)
+    }
+    if (row !== undefined && !isPlainObject(row)) {
+      throw new RpcError('rpc/bad-args', `changes[${String(index)}].row 必须是对象`)
+    }
+    return { entity, id, op, updatedAt, ...(row === undefined ? {} : { row }) }
+  })
+}
+
 export function createHandlers(): GatewayHandlers {
+  /**
+   * 工作台适配层。在这里创建一次而不是每个 handler 里 new：
+   * 它带着"探测结果缓存"，每个 device.info 都新建一个等于没有缓存。
+   */
+  const wb = createWorkbench()
+
   const handlers = {
     // ── 设备与连接 ────────────────────────────────────────────────────────
     'device.info': async (rc) => ({
@@ -105,8 +165,13 @@ export function createHandlers(): GatewayHandlers {
       dshVersion: rc.dshVersion,
       linkVersion: '0.1.0',
       // caps 从协议默认值来，并在这里按实际能力覆盖：
-      // 没装 git 就别宣称支持仓库浏览（App 会据此隐藏入口，而不是点进去才报错）
-      caps: { ...DEFAULT_CAPS, gh: rc.cfg.repo.github.enabled ? 1 : 0 },
+      // 没装 git 就别宣称支持仓库浏览（App 会据此隐藏入口，而不是点进去才报错）。
+      // 工作台同理：探测 /workbench-api/sync/meta 可达才宣称 workbench:1。
+      caps: {
+        ...DEFAULT_CAPS,
+        gh: rc.cfg.repo.github.enabled ? 1 : 0,
+        workbench: (await wb.probe(rc.ctx)) ? 1 : 0,
+      },
       lock: rc.lock.get(),
     }),
 
@@ -1056,6 +1121,54 @@ export function createHandlers(): GatewayHandlers {
     // ── M3 待实现：GitHub 远程仓库（需要 PC 侧 token，caps.gh 默认 0）──────
     'repo.gh.tree': notImplemented('repo.gh.tree'),
     'repo.gh.file': notImplemented('repo.gh.file'),
+
+    // ── 工作台同步（wb.*）─────────────────────────────────────────────────
+    //
+    // 宿主是 dsh-workbench：它在同一个 webServer 的 `/workbench-api` 前缀上
+    // 提供 sync / state / notes / focus / news 的 HTTP 接口。这里只做参数校验
+    // 与透传，不重写业务规则——两套规则早晚漂移，而工作台的数据归宿主所有。
+    //
+    // 拿不到 webServer 或探测不到工作台时，适配层统一抛 host/unavailable；
+    // App 侧看 caps.workbench 决定要不要显示入口。
+    'wb.meta.get': async (rc) => wb.meta(rc.ctx),
+
+    'wb.delta.pull': async (rc, p) =>
+      wb.delta(rc.ctx, {
+        since: optStr(p, 'since'),
+        entity: optStr(p, 'entity'),
+        limit: optNum(p, 'limit'),
+      }),
+
+    'wb.delta.push': async (rc, p) => wb.push(rc.ctx, wbChanges(p)),
+
+    // 全量快照：App 首次同步 / 对账时用。只代理 GET /state，镜像不给写入口。
+    'wb.state.get': async (rc) => wb.state(rc.ctx),
+
+    'wb.notes.put': async (rc, p) => {
+      // 主形状是 { note }；也接受扁平形状（App 直接把自己持有的笔记对象发上来）
+      const note = isPlainObject(p['note']) ? p['note'] : typeof p['id'] === 'string' ? p : undefined
+      if (note === undefined) {
+        throw new RpcError('rpc/bad-args', '参数 note 必须是对象（或至少带 id 的笔记字段）')
+      }
+      return wb.notesPut(rc.ctx, note)
+    },
+
+    'wb.notes.delete': async (rc, p) => wb.notesDelete(rc.ctx, str(p, 'id')),
+
+    'wb.focus.add': async (rc, p) => {
+      const taskId = str(p, 'taskId')
+      const minutes = optNum(p, 'minutes')
+      if (minutes === undefined || minutes <= 0) {
+        throw new RpcError('rpc/bad-args', '参数 minutes 必须是正数')
+      }
+      return wb.focusAdd(rc.ctx, { taskId, minutes, completed: p['completed'] === true })
+    },
+
+    'wb.news.list': async (rc) => wb.newsList(rc.ctx),
+
+    // 占位：宿主还没有"立即抓取新闻"的入口。形状先定下来，
+    // App 照常展示"暂不支持"，宿主实现后只换实现不换协议。
+    'wb.news.fetchNow': async () => ({ queued: false, reason: 'not-implemented' }),
 
     // ── M1 待实现：插件管理 ───────────────────────────────────────────────
     'plugin.list': notImplemented('plugin.list'),
