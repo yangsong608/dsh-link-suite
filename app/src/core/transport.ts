@@ -23,7 +23,7 @@ export interface LinkEndpoint {
   readonly token?: string
 }
 
-type Listener = (payload: unknown) => void
+type Listener = (payload: unknown, channel?: string) => void
 
 interface Pending {
   resolve: (value: unknown) => void
@@ -158,7 +158,9 @@ export class Link {
       if (set === undefined) return
       for (const cb of set) {
         try {
-          cb(frame.p)
+          // 第二个参数是频道（sess:<sessionId>）。会话级事件必须靠它区分，
+          // 否则同时订阅多个会话时，A 会话的执行记录会被画进 B 会话。
+          cb(frame.p, frame.ch)
         } catch {
           // 单个监听器抛错不影响其它监听器
         }

@@ -1026,7 +1026,15 @@ function nowLabel(): string {
 }
 
 /** 把服务端推来的帧接到 UI 上。事件分两路：stream（聊天气泡）与 trace（工具活动）。 */
-function onSessionEvent(method: string, payload: unknown): void {
+function onSessionEvent(method: string, payload: unknown, channel?: string): void {
+  /*
+   * 只处理**本会话**频道的事件。
+   *
+   * 网关按 sess:<sessionId> 分频道推送；App 在同一个连接上会保留此前会话的
+   * 订阅，那些事件也会到达。原来丢掉 channel 后无法区分，于是出现
+   * "这个会话里混进了别的会话的执行过程与产物"。
+   */
+  if (channel !== undefined && channel !== `sess:${sessionId.value}`) return
   const data = payload as Record<string, unknown> | undefined
   if (data === undefined) return
 
