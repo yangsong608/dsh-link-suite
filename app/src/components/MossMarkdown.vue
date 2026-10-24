@@ -46,6 +46,22 @@ function cls(seg: Inline): string {
 
       <view v-else-if="b.t === 'hr'" class="hr" />
 
+      <!-- Markdown 表格：横向滚动，表头加底色 -->
+      <view v-else-if="b.t === 'table'" class="md-table-wrap">
+        <view class="md-table">
+          <view class="md-tr md-th">
+            <text v-for="(c, j) in b.head" :key="j" class="md-td">
+              <text v-for="(s, k) in c" :key="k" :class="cls(s)">{{ s.v }}</text>
+            </text>
+          </view>
+          <view v-for="(row, ri) in b.rows" :key="ri" class="md-tr">
+            <text v-for="(c, j) in row" :key="j" class="md-td">
+              <text v-for="(s, k) in c" :key="k" :class="cls(s)">{{ s.v }}</text>
+            </text>
+          </view>
+        </view>
+      </view>
+
       <!-- dsh-ui fence：按 genui 子集渲染（text/list/table/stat/chart…） -->
       <MossGenui v-else-if="b.t === 'genui'" :raw="b.raw" @answer="emit('answer', $event)" />
 
@@ -165,6 +181,29 @@ function cls(seg: Inline): string {
 .q-text { font-size: 13px; line-height: 1.6; color: var(--t2); }
 
 .hr { height: 1px; margin: 12px 0; background: var(--bd); }
+
+/* Markdown 表格 */
+.md-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 8px 0;
+}
+.md-table { display: inline-block; min-width: 100%; }
+.md-tr { display: flex; border-bottom: 1px solid var(--bd); }
+.md-th { background: var(--s2); }
+.md-td {
+  flex: none;
+  min-width: 72px;
+  max-width: 200px;
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--t2);
+  word-break: break-word;
+}
+.md-th .md-td { color: var(--t1); font-weight: 600; }
 
 /* genui 降级卡：明确"有内容但我渲染不了"，而不是假装它是普通代码 */
 .genui {

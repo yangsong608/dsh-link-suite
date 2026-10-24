@@ -30,6 +30,8 @@ export type Block =
   | { readonly t: 'ol'; readonly items: readonly (readonly Inline[])[]; readonly start: number }
   | { readonly t: 'quote'; readonly inline: readonly Inline[] }
   | { readonly t: 'hr' }
+  /** Markdown 表格：表头 + 行。 */
+  | { readonly t: 'table'; readonly head: readonly (readonly Inline[])[]; readonly rows: readonly (readonly Inline[])[][] }
   /**
    * `dsh-ui` fence（dsh-genui 插件的结构化 UI 规格）。
    *
@@ -111,6 +113,14 @@ const OL = /^\s*(\d+)[.)]\s+(.*)$/
 const HR = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/
 const QUOTE = /^\s*>\s?(.*)$/
 const FENCE = /^\s*```(.*)$/
+/** 表格分隔行，如 | --- | :--: | */
+const TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/
+
+/** 把 | a | b | 拆成单元格 */
+function splitRow(line: string): string[] {
+  const t = line.trim().replace(/^\|/, '').replace(/\|$/, '')
+  return t.split('|').map((c) => c.trim())
+}
 
 /** 把 Markdown 文本解析成块。未知结构按普通段落处理，不丢内容。 */
 export function parseMarkdown(src: string): Block[] {
@@ -190,6 +200,24 @@ export function parseMarkdown(src: string): Block[] {
         i += 1
       }
       blocks.push({ t: 'ol', start, items })
+      continue
+    }
+
+    /*
+     * 表格：至少要两行，第二行是分隔行。
+     *
+     * agent 很爱用表格列对比项；不支持的话手机上就是一屏竖线文本，
+     * 比纯文字还难读。
+     */
+    if (line.includes('|') && TABLE_SEP.test(lines[i + 1] ?? '')) {
+      const head = splitRow(line).map(parseInline)
+      const rows: Inline[][][] = []
+      i += 2
+      while (i < lines.length && (lines[i] ?? '').includes('|') && (lines[i] ?? '').trim().length > 0) {
+        rows.push(splitRow(lines[i] ?? '').map(parseInline))
+        i += 1
+      }
+      blocks.push({ t: 'table', head, rows })
       continue
     }
 
