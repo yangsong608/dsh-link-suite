@@ -67,6 +67,8 @@ const todoAllDone = computed(() => todoItems.value.length > 0 && todoDone.value 
 
 interface AskQuestion { id: string; question: string; options: string[] }
 interface AskItem { callId: string; questions: AskQuestion[] }
+/** 当前显示第几题：与 PC 端一致，一题一题答，不一次糊一屏。 */
+const askIndex = ref(0)
 const askCard = ref<AskItem | undefined>(undefined)
 
 /** 从 todo_write 的参数里取清单（字段是 todos[].content/status）。 */
@@ -88,6 +90,7 @@ function readAsk(args: string, callId: string): void {
     }
     const list = Array.isArray(o.questions) ? o.questions : []
     if (list.length === 0) return
+    askIndex.value = 0
     askCard.value = {
       callId,
       questions: list.map((q, i) => ({
@@ -112,7 +115,12 @@ function answerAsk(questionId: string, label: string): void {
   }).then((r) => {
     const res = r as { ok?: boolean }
     if (res.ok === true) {
-      askCard.value = undefined
+      const total = card.questions.length
+      if (askIndex.value + 1 < total) {
+        askIndex.value += 1
+      } else {
+        askCard.value = undefined
+      }
       uni.showToast({ title: '已回答', icon: 'none' })
     } else {
       uni.showToast({ title: '回答未被接受（可能已过期）', icon: 'none' })
@@ -1436,15 +1444,20 @@ onUnmounted(() => {
     <!-- 提问：工具调用里的选项。手机端只能看，回答要在电脑上 -->
     <view v-if="askCard" class="ask-bar">
       <view class="ask-head">
-        <text class="ask-q">{{ askCard.questions[0]?.question }}</text>
+        <text class="ask-q">{{ askCard.questions[askIndex]?.question }}</text>
         <text class="ask-x" @tap="askCard = undefined">×</text>
       </view>
-      <view v-for="q in askCard.questions" :key="q.id" class="ask-q-block">
-        <text v-if="askCard.questions.length > 1" class="ask-sub">{{ q.question }}</text>
-        <view class="ask-opts">
-          <view v-for="(o, i) in q.options" :key="i" class="ask-opt" @tap="answerAsk(q.id, o)">
-            <text>{{ o }}</text>
-          </view>
+      <text v-if="askCard.questions.length > 1" class="ask-progress mono">
+        {{ askIndex + 1 }} / {{ askCard.questions.length }}
+      </text>
+      <view class="ask-opts">
+        <view
+          v-for="(o, i) in (askCard.questions[askIndex]?.options ?? [])"
+          :key="i"
+          class="ask-opt"
+          @tap="answerAsk(askCard.questions[askIndex]?.id ?? '', o)"
+        >
+          <text>{{ o }}</text>
         </view>
       </view>
     </view>
@@ -2212,6 +2225,7 @@ onUnmounted(() => {
 .ask-opts { display: flex; flex-direction: column; gap: 7px; }
 .ask-q-block { display: flex; flex-direction: column; gap: 6px; }
 .ask-sub { font-size: 12px; color: var(--t1); }
+.ask-progress { font-size: 10px; color: var(--t3); }
 .ask-hint { font-size: 10.5px; color: var(--t3); }
 
 .plan-bar {
