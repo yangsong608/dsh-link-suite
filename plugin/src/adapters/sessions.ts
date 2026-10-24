@@ -256,7 +256,12 @@ export function toTraceItem(event: HostSessionEvent, redacted = false): TraceIte
         tool,
         phase: 'call',
         ...(target === undefined ? {} : { target }),
-        ...(argsRaw.length === 0 || redacted ? {} : { input: argsRaw.slice(0, 200) }),
+        /*
+         * 参数上限从 200 提到 4000：todo_write / ask_user_question 的
+         * arguments 是完整 JSON，截断后 App 根本无法解析，清单与选项就永远
+         * 出不来。单帧变大一点，换来这两类交互可用。
+         */
+        ...(argsRaw.length === 0 || redacted ? {} : { input: argsRaw.slice(0, 4000) }),
         // callId 用于把 result 合并回同一条
         ...(asString(data['callId']) === undefined ? {} : { callId: asString(data['callId']) as string }),
       }

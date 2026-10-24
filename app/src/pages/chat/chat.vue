@@ -1006,6 +1006,13 @@ function onSessionEvent(method: string, payload: unknown): void {
             : kind === 'note' ? String(data['text'] ?? '轮次')
               : kind === 'approval' ? '审批'
                 : kind
+    // todo / 提问都靠 arguments 识别，必须在 trace 这一路解析
+    if (kind === 'tool') {
+      const name = String(data['tool'] ?? '')
+      const args = String(data['input'] ?? '')
+      if (name === 'todo_write') readTodos(args)
+      if (name === 'ask_user_question') readAsk(args)
+    }
     const detail =
       kind === 'tool' ? String(data['target'] ?? '')
         : kind === 'think' ? String(data['summary'] ?? '')
@@ -1068,8 +1075,6 @@ function onSessionEvent(method: string, payload: unknown): void {
         if (ok !== undefined) last.ok = ok
         // 结果里若带有更准确的工具名，补上
         if (tool.length > 0 && last.tool !== tool) last.tool = tool
-        if (tool === 'todo_write') readTodos(String(data['arguments'] ?? ''))
-        if (tool === 'ask_user_question') readAsk(String(data['arguments'] ?? ''))
       } else if (phase === 'result') {
         // 没有可合并的上一行（例如滚动到历史中段才断线重连）：仍然显示，但标为结果
         items.value.push({ k: 'activity', tool, summary, ms, ok: ok ?? true })
