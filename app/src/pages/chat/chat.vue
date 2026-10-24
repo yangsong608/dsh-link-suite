@@ -65,7 +65,8 @@ const todoDone = computed(() => todoItems.value.filter((x) => x.status === 'comp
  */
 const todoAllDone = computed(() => todoItems.value.length > 0 && todoDone.value === todoItems.value.length)
 
-interface AskItem { question: string; options: string[] }
+interface AskQuestion { id: string; question: string; options: string[] }
+interface AskItem { callId: string; questions: AskQuestion[] }
 const askCard = ref<AskItem | undefined>(undefined)
 
 /** 从 todo_write 的参数里取清单（字段是 todos[].content/status）。 */
@@ -80,16 +81,43 @@ function readTodos(args: string): void {
 }
 
 /** 从 ask_user_question 的参数里取问题与选项。 */
-function readAsk(args: string): void {
+function readAsk(args: string, callId: string): void {
   try {
-    const o = JSON.parse(args) as { questions?: { question?: string; options?: { label?: string }[] }[] }
-    const first = Array.isArray(o.questions) ? o.questions[0] : undefined
-    if (first === undefined) return
+    const o = JSON.parse(args) as {
+      questions?: { id?: string; question?: string; options?: { label?: string }[] }[]
+    }
+    const list = Array.isArray(o.questions) ? o.questions : []
+    if (list.length === 0) return
     askCard.value = {
-      question: String(first.question ?? ''),
-      options: Array.isArray(first.options) ? first.options.map((x) => String(x.label ?? '')) : [],
+      callId,
+      questions: list.map((q, i) => ({
+        id: String(q.id ?? `q${i}`),
+        question: String(q.question ?? ''),
+        options: Array.isArray(q.options) ? q.options.map((x) => String(x.label ?? '')) : [],
+      })),
     }
   } catch { /* 忽略 */ }
+}
+
+/** 点选项 → 真正回答宿主提问。 */
+function answerAsk(questionId: string, label: string): void {
+  const link = currentLink()
+  const card = askCard.value
+  if (link === undefined || card === undefined) return
+  haptic('medium')
+  void link.call('session.answer', {
+    sessionId: sessionId.value,
+    callId: card.callId,
+    answers: [{ id: questionId, selected: [label] }],
+  }).then((r) => {
+    const res = r as { ok?: boolean }
+    if (res.ok === true) {
+      askCard.value = undefined
+      uni.showToast({ title: '已回答', icon: 'none' })
+    } else {
+      uni.showToast({ title: '回答未被接受（可能已过期）', icon: 'none' })
+    }
+  }).catch((e: unknown) => handleError(e, '回答失败：'))
 }
 const planActive = ref(false)
 const planOpen = ref(false)
@@ -1025,7 +1053,7 @@ function onSessionEvent(method: string, payload: unknown): void {
       if (name === 'ask_user_question') {
         // 结果回来（或新一轮开始）说明这个提问已经不需要展示
         if (phase === 'result') askCard.value = undefined
-        else readAsk(args)
+        else readAsk(args, String(data['callId'] ?? ''))
       }
     }
     const detail =
@@ -1408,13 +1436,17 @@ onUnmounted(() => {
     <!-- 提问：工具调用里的选项。手机端只能看，回答要在电脑上 -->
     <view v-if="askCard" class="ask-bar">
       <view class="ask-head">
-        <text class="ask-q">{{ askCard.question }}</text>
+        <text class="ask-q">{{ askCard.questions[0]?.question }}</text>
         <text class="ask-x" @tap="askCard = undefined">×</text>
       </view>
-      <view v-for="(o, i) in askCard.options" :key="i" class="ask-opt">
-        <text>{{ o }}</text>
+      <view v-for="q in askCard.questions" :key="q.id" class="ask-q-block">
+        <text v-if="askCard.questions.length > 1" class="ask-sub">{{ q.question }}</text>
+        <view class="ask-opts">
+          <view v-for="(o, i) in q.options" :key="i" class="ask-opt" @tap="answerAsk(q.id, o)">
+            <text>{{ o }}</text>
+          </view>
+        </view>
       </view>
-      <text class="ask-hint">这项要在电脑上回答（工具在等宿主的回答，手机端无法代替）</text>
     </view>
 
     <!-- 快捷指令：走宿主的命令注册表 -->
@@ -2176,6 +2208,10 @@ onUnmounted(() => {
   background: var(--s2);
 }
 .ask-opt text { font-size: 12px; color: var(--t2); }
+.ask-opt:active { background: var(--acc-soft); }
+.ask-opts { display: flex; flex-direction: column; gap: 7px; }
+.ask-q-block { display: flex; flex-direction: column; gap: 6px; }
+.ask-sub { font-size: 12px; color: var(--t1); }
 .ask-hint { font-size: 10.5px; color: var(--t3); }
 
 .plan-bar {

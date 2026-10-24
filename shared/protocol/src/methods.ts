@@ -69,6 +69,8 @@ export const METHODS = [
   'session.command',
   // 计划 / 待办步骤（宿主 plan 投影）
   'session.plan',
+  // 回答宿主的提问（ask_user_question 等）
+  'session.answer',
   'session.list',
   'session.prompt',
   'session.modelCatalog',

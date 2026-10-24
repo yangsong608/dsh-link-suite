@@ -872,6 +872,45 @@ export function createHandlers(): GatewayHandlers {
       }
     },
 
+    /**
+     * 回答宿主提问。
+     *
+     * dsh 的提问是宿主侧阻塞调用，回答走 `userQuestions.answer(agent, callId, answer)`。
+     * 之前 App 只能看不能说，因为这条通道只有 dsh 自己的 UI 插件在用；
+     * 我们作为第三方客户端，直接调同一个宿主服务即可。
+     */
+    'session.answer': async (rc, p) => {
+      const questions = rc.ctx.get<UserQuestionsService>('userQuestions', false)
+      const agents = rc.ctx.get<AgentRegistry>('agents', false)
+      if (questions?.answer === undefined) throw new RpcError('host/unavailable', '宿主没有提问服务')
+
+      const sessionId = str(p, 'sessionId')
+      const callId = str(p, 'callId')
+      const raw = Array.isArray(p['answers']) ? p['answers'] : []
+      if (callId.length === 0 || raw.length === 0) throw new RpcError('rpc/bad-args', '缺少 callId 或答案')
+
+      const answers = raw
+        .map((x) => x as { id?: unknown; selected?: unknown })
+        .filter((x) => typeof x.id === 'string')
+        .map((x) => ({
+          id: String(x.id),
+          selected: Array.isArray(x.selected) ? x.selected.map(String) : [],
+        }))
+
+      const agent = agents?.get?.(sessionId)
+      if (agent === undefined) throw new RpcError('session/not-found', '找不到这个会话')
+
+      const controller = new AbortController()
+      try {
+        const ok = questions.answer(agent, callId, { answers })
+        return { ok: ok === true }
+      } catch (error) {
+        throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
+      } finally {
+        controller.abort()
+      }
+    },
+
     // ── 费用与峰谷 ────────────────────────────────────────────────────────
     //
     // 数据**转发**自 dsh-cost-meter，不自算金额：它的账本按真实 token 用量与
@@ -1365,4 +1404,13 @@ interface CommandService {
 /** 宿主 agent 注册表：按 sessionId 取 agent。 */
 interface AgentRegistry {
   get?(sessionId: string): unknown
+}
+
+/** 宿主提问服务（dsh 的 user-questions 包提供）。 */
+interface UserQuestionsService {
+  answer?(
+    agent: unknown,
+    callId: string,
+    answer: { answers: { id: string; selected: string[]; custom?: string }[] },
+  ): boolean
 }

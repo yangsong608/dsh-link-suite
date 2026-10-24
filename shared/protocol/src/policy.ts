@@ -78,6 +78,7 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   // 命令会改变会话状态（如进入 plan 模式），必须 operator + 解锁
   'session.command': P('operator', 'unlocked'),
   'session.plan': P('viewer'),
+  'session.answer': P('operator', 'unlocked'),
   'session.prompt': P('operator', 'unlocked'),
   'session.cancel': P('operator', 'unlocked'),
   'session.follow': P('viewer'),
