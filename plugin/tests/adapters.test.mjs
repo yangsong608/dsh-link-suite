@@ -90,7 +90,11 @@ test('tool/call 用真实字段 name/arguments（dsh 的 SessionEventMap）', ()
   const item = toTraceItem({ type: 'tool/call', seq: 4, data: { name: 'Bash', arguments: long } })
   assert.equal(item.k, 'tool')
   assert.equal(item.tool, 'Bash', '必须取到真实工具名')
-  assert.equal(item.input.length, 200, 'input 截断到 200')
+  // 上限从 200 提到 4000：todo_write / ask_user_question 的完整 JSON
+  // 必须完整到达客户端，否则清单与选项永远解析不出来
+  // 200 字符的限制会让 todo_write / ask_user_question 的 JSON 被截断，
+  // 客户端永远解析不出清单与选项。现在上限 4000，短参数原样保留。
+  assert.ok(item.input.length > 200, 'input 不再截到 200')
 })
 
 test('tool/call 从 arguments 解析出可读目标', () => {
