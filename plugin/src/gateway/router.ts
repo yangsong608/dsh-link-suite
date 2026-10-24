@@ -900,15 +900,38 @@ export function createHandlers(): GatewayHandlers {
       const agent = agents?.get?.(sessionId)
       if (agent === undefined) throw new RpcError('session/not-found', '找不到这个会话')
 
-      const controller = new AbortController()
-      try {
-        const ok = questions.answer(agent, callId, { answers })
-        return { ok: ok === true }
-      } catch (error) {
-        throw new RpcError('host/internal', error instanceof Error ? error.message : String(error))
-      } finally {
-        controller.abort()
+      /*
+       * 先用客户端给的 callId；失败再自己从会话事件里找。
+       *
+       * 客户端拿到的 callId 来自 trace 帧，而宿主内部记录提问时用的是它自己的
+       * ToolCallId —— 两者可能不是同一个值（真机表现：PC 有面板，手机点选
+       * 一直返回 false）。所以失败后回退到「事件里最后一个 ask 调用的 id」，
+       * 并用同一条事件里的问题 id 覆盖，避免 id 也对不上。
+       */
+      const attempt = (cid: string, list: { id: string; selected: string[] }[]): boolean => {
+        try {
+          return questions.answer!(agent, cid, { answers: list }) === true
+        } catch {
+          return false
+        }
       }
+
+      if (attempt(callId, answers)) return { ok: true, via: 'client' }
+
+      const recovered = await findLastAsk(rc, sessionId)
+      if (recovered !== undefined) {
+        // 用宿主事件里的问题 id 重建答案：客户端发来的 id 可能是我们补的序号
+        const rebuilt = recovered.questions.map((q) => {
+          const mine = answers.find((a) => a.id === q.id)
+          return { id: q.id, selected: mine?.selected ?? answers[0]?.selected ?? [] }
+        })
+        // callId 相同但问题 id 不同（我们补的序号）也要重试一次
+        if (attempt(recovered.callId, rebuilt)) {
+          return { ok: true, via: 'events' }
+        }
+      }
+
+      return { ok: false, sentCallId: callId }
     },
 
     // ── 费用与峰谷 ────────────────────────────────────────────────────────
@@ -1413,4 +1436,41 @@ interface UserQuestionsService {
     callId: string,
     answer: { answers: { id: string; selected: string[]; custom?: string }[] },
   ): boolean
+}
+
+/**
+ * 从会话事件里找最后一次提问调用。
+ *
+ * 宿主没暴露「待答列表」，但提问本身是 `tool/call` 事件，参数里有问题 id，
+ * 事件上有 callId —— 这两样正好是 answer() 需要的。
+ */
+async function findLastAsk(
+  rc: RouteContext,
+  sessionId: string,
+): Promise<{ callId: string; questions: { id: string }[] } | undefined> {
+  let events: readonly unknown[] = []
+  try {
+    events = await collectSessionEvents(rc, sessionId)
+  } catch {
+    return undefined
+  }
+
+  let found: { callId: string; questions: { id: string }[] } | undefined
+  for (const raw of events) {
+    const e = raw as { type?: unknown; data?: Record<string, unknown> } | undefined
+    if (e?.type !== 'tool/call') continue
+    const name = String(e.data?.['name'] ?? e.data?.['toolName'] ?? '')
+    if (name !== 'ask_user_question') continue
+    const callId = String(e.data?.['callId'] ?? '')
+    if (callId.length === 0) continue
+    let questions: { id: string }[] = []
+    try {
+      const args = JSON.parse(String(e.data?.['arguments'] ?? '{}')) as {
+        questions?: { id?: string }[]
+      }
+      questions = (args.questions ?? []).map((q, i) => ({ id: String(q.id ?? `q${i}`) }))
+    } catch { /* 参数不是 JSON 就只用 callId */ }
+    found = { callId, questions }
+  }
+  return found
 }
