@@ -1450,12 +1450,12 @@ onUnmounted(() => {
       <text v-if="askCard.questions.length > 1" class="ask-progress mono">
         {{ askIndex + 1 }} / {{ askCard.questions.length }}
       </text>
-      <text class="ask-hint">在电脑上回答（手机端的回答通道尚未打通）</text>
       <view class="ask-opts">
         <view
           v-for="(o, i) in (askCard.questions[askIndex]?.options ?? [])"
           :key="i"
-          class="ask-opt readonly"
+          class="ask-opt"
+          @tap="answerAsk(askCard.questions[askIndex]?.id ?? '', o)"
         >
           <text>{{ o }}</text>
         </view>
@@ -2226,7 +2226,6 @@ onUnmounted(() => {
 .ask-q-block { display: flex; flex-direction: column; gap: 6px; }
 .ask-sub { font-size: 12px; color: var(--t1); }
 .ask-progress { font-size: 10px; color: var(--t3); }
-.ask-opt.readonly { opacity: 0.75; }
 .ask-hint { font-size: 10.5px; color: var(--t3); }
 .ask-hint { font-size: 10.5px; color: var(--t3); }
 
