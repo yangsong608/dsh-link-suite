@@ -199,6 +199,31 @@ test('默认能力协商开启 trace/queue/git，关闭 GitHub', () => {
   assert.equal(DEFAULT_CAPS.gh, 0, 'GitHub 浏览需要 token，必须显式开启')
 })
 
+// ── 工作台同步（wb.*）─────────────────────────────────────────────────────
+//
+// 工作台的数据是用户的生产资料。分级必须与 git / fs 一致：
+// 看结构可以（半锁放行），改数据必须 operator + 已解锁。
+
+test('工作台读方法：viewer，半锁放行', () => {
+  for (const m of ['wb.meta.get', 'wb.delta.pull', 'wb.state.get', 'wb.news.list']) {
+    assert.equal(METHOD_POLICY[m].role, 'viewer', `${m} 是只读的，不该要求更高角色`)
+    assert.equal(lockRejection(SOFT, m), undefined, `${m} 在半锁时应放行`)
+  }
+})
+
+test('工作台写方法：operator + unlocked，半锁与锁死都拒绝', () => {
+  for (const m of ['wb.delta.push', 'wb.notes.put', 'wb.notes.delete', 'wb.focus.add', 'wb.news.fetchNow']) {
+    assert.equal(METHOD_POLICY[m].role, 'operator', `${m} 会改数据，必须是 operator`)
+    assert.equal(METHOD_POLICY[m].tier, 'unlocked', `${m} 会改数据，必须要求已解锁`)
+    assert.equal(lockRejection(SOFT, m), 'readonly', `${m} 在半锁时应拒绝`)
+    assert.equal(lockRejection(LOCKED, m), 'locked', `${m} 在锁死时应拒绝`)
+  }
+})
+
+test('caps.workbench 默认 1，由宿主按探测结果覆盖', () => {
+  assert.equal(DEFAULT_CAPS.workbench, 1, '协议假定可用；宿主探测不到时给 0')
+})
+
 test('新增方法总数与分组自检（防止只加名字不加策略之外还漏了别的）', () => {
   assert.equal(METHODS.length, new Set(METHODS).size, '方法名有重复')
   assert.ok(METHODS.length >= 46, `方法数偏少：${METHODS.length}`)

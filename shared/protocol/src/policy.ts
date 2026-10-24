@@ -132,6 +132,19 @@ export const METHOD_POLICY: Record<Method, MethodPolicy> = {
   'repo.gh.tree': P('viewer', 'unlocked'),
   'repo.gh.file': P('viewer', 'unlocked'),
 
+  // ── 工作台同步（wb.*）────────────────────────────────────────────────
+  // 读：结构可以看（半锁放行）；写：必须 operator + 已解锁。
+  // 与 git / fs 的分级保持同一条线，不给工作台开后门。
+  'wb.meta.get': P('viewer'),
+  'wb.delta.pull': P('viewer'),
+  'wb.state.get': P('viewer'),
+  'wb.news.list': P('viewer'),
+  'wb.delta.push': P('operator', 'unlocked'),
+  'wb.notes.put': P('operator', 'unlocked'),
+  'wb.notes.delete': P('operator', 'unlocked'),
+  'wb.focus.add': P('operator', 'unlocked'),
+  'wb.news.fetchNow': P('operator', 'unlocked'),
+
   // 插件
   'plugin.list': P('admin', 'unlocked'),
   'plugin.inspect': P('admin', 'unlocked'),
