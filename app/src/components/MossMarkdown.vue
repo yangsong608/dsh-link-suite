@@ -10,6 +10,7 @@
  */
 import { computed } from 'vue'
 import { looksLikeMarkdown, parseMarkdown, type Inline } from '@/core/markdown'
+import MossGenui from '@/components/MossGenui.vue'
 
 const props = withDefaults(defineProps<{ text: string }>(), { text: '' })
 
@@ -44,17 +45,8 @@ function cls(seg: Inline): string {
 
       <view v-else-if="b.t === 'hr'" class="hr" />
 
-      <!-- dsh-ui fence：本端不实现 genui 组件集，给一张说明卡而不是糊一屏 JSON -->
-      <view v-else-if="b.t === 'genui'" class="genui">
-        <view class="genui-head">
-          <text class="genui-badge mono">GENUI</text>
-          <text class="genui-t">结构化 UI</text>
-        </view>
-        <text class="genui-d">电脑端 DSH 已把它渲染成可交互组件；手机端暂以文字呈现，可在电脑上查看。</text>
-        <scroll-view class="genui-raw" scroll-y scroll-x>
-          <text class="genui-code mono">{{ b.raw.length > 400 ? b.raw.slice(0, 400) + '…' : b.raw }}</text>
-        </scroll-view>
-      </view>
+      <!-- dsh-ui fence：按 genui 子集渲染（text/list/table/stat/chart…） -->
+      <MossGenui v-else-if="b.t === 'genui'" :raw="b.raw" />
 
       <view v-else-if="b.t === 'quote'" class="quote">
         <text v-for="(s, j) in segments(b.inline)" :key="j" class="q-text" :class="cls(s)">{{ s.v }}</text>
@@ -192,7 +184,6 @@ function cls(seg: Inline): string {
   letter-spacing: 0.6px;
 }
 .genui-t { font-size: 12px; color: var(--t1); }
-.genui-d { display: block; margin-top: 6px; font-size: 11px; line-height: 16px; color: var(--t3); }
 .genui-raw { max-height: 96px; margin-top: 8px; }
 .genui-code { font-size: 10.5px; line-height: 15px; color: var(--t3); white-space: pre; }
 </style>
