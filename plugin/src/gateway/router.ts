@@ -1549,6 +1549,45 @@ async function dumpAnswerDebug(
 
     const projections = rc.ctx.get<{ stateOf?: (session: unknown, key: string) => unknown }>('sessionProjections', false)
     const session = (agent as { session?: unknown } | undefined)?.session
+
+    /*
+     * 探针：投影为什么是空的。
+     *
+     * 1) 换几个可能的 key 看哪个有数据
+     * 2) stateOf 传 session 对象 vs 传 sessionId 字符串
+     * 3) agent.session 的身份与顶层字段（判断是不是拿错实例）
+     */
+    const probes: Record<string, unknown> = {}
+    for (const key of ['userQuestions', 'user-questions', 'questions', 'askUser']) {
+      try {
+        const st = projections?.stateOf?.(session, key) as
+          | { questions?: { active?: unknown[]; settled?: unknown[] } }
+          | undefined
+        probes[`obj:${key}`] = {
+          active: st?.questions?.active?.length ?? null,
+          settled: st?.questions?.settled?.length ?? null,
+        }
+      } catch (e) {
+        probes[`obj:${key}`] = `ERR ${e instanceof Error ? e.message : String(e)}`
+      }
+    }
+    try {
+      const byId = projections?.stateOf?.(sessionId, 'userQuestions') as
+        | { questions?: { active?: unknown[] } }
+        | undefined
+      probes['id:userQuestions'] = { active: byId?.questions?.active?.length ?? null }
+    } catch (e) {
+      probes['id:userQuestions'] = `ERR ${e instanceof Error ? e.message : String(e)}`
+    }
+
+    const sessionShape = session === undefined
+      ? null
+      : {
+          id: (session as { id?: unknown }).id ?? null,
+          ctor: (session as object)?.constructor?.name ?? null,
+          keys: Object.keys(session as object).slice(0, 12),
+        }
+
     let state: unknown
     let stateError: string | undefined
     try {
@@ -1566,6 +1605,8 @@ async function dumpAnswerDebug(
       hasSession: session !== undefined,
       agentSessionId: (session as { id?: unknown } | undefined)?.id ?? null,
       socketSessionMatch: String((session as { id?: unknown } | undefined)?.id ?? '') === sessionId,
+      sessionShape,
+      probes,
       stateError,
       state,
     }
